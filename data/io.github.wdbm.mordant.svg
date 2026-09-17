@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- Copyright (C) 2026 William Breaden Madden -->
+  <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="#3861aa"/>
+  <path d="M16 64c12-21 28-32 48-32s36 11 48 32c-12 21-28 32-48 32S28 85 16 64Z" fill="#ffffff"/>
+  <circle cx="64" cy="64" r="24" fill="#3861aa"/>
+  <path d="M57 49v30l23-15Z" fill="#ffffff"/>
+</svg>

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mordant"
+version = "2026.9.11.12"
+description = "media viewer for images and videos which can save media to multiple selected directories at once" 
+requires-python = ">=3.10"
+license = {text = "GPL-3.0-or-later"}
+authors = [{name = "William Breaden Madden"}]
+dependencies = ["Pillow>=9", "docopt>=0.6.2"]
+readme = "README.md"
+
+[project.scripts]
+mordant = "mordant_app.cli:main"
+
+[tool.setuptools]
+packages = ["mordant_app"]

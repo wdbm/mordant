@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Mordant
+Comment=Browse images and videos and save files to multiple directories
+Exec=@EXEC@ %F
+TryExec=@TRYEXEC@
+Icon=io.github.wdbm.mordant
+Terminal=false
+Categories=Graphics;Viewer;AudioVideo;Video;Player;GTK;
+MimeType=image/png;image/jpeg;image/gif;image/svg+xml;image/webp;video/mp4;video/x-matroska;video/webm;video/quicktime;video/x-msvideo;video/mpeg;video/ogg;
+StartupNotify=true
+DBusActivatable=true

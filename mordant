@@ -1,0 +1,7 @@
+#!/usr/bin/env python3
+"""
+Launch this checkout. Installed console scripts use mordant_app.cli.
+"""
+from mordant_app.cli import main
+
+raise SystemExit(main())
