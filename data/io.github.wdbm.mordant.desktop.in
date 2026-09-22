@@ -9,4 +9,4 @@ Terminal=false
 Categories=Graphics;Viewer;AudioVideo;Video;Player;GTK;
 MimeType=image/png;image/jpeg;image/gif;image/svg+xml;image/webp;video/mp4;video/x-matroska;video/webm;video/quicktime;video/x-msvideo;video/mpeg;video/ogg;
 StartupNotify=true
-DBusActivatable=true
+DBusActivatable=false

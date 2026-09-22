@@ -42,15 +42,19 @@ class Configuration:
         self.session = None
         self.manager = TransferManager()
         self.history_error = None
-        target = (
-            Path(directory).expanduser().resolve()
-            if directory is not None
-            else default_configuration_directory().resolve()
-        )
+        if directory is None:
+            target = default_configuration_directory().resolve()
+            target.mkdir(parents=True, exist_ok=True)
+        else:
+            target = Path(directory).expanduser().resolve()
         self.switch(target, require_history=False)
 
     def switch(self, directory: str | Path, *, require_history: bool = True) -> Path:
         target = Path(directory).expanduser().resolve()
+        if not target.exists():
+            raise FileNotFoundError(f"Configuration directory is unavailable: {target}")
+        if not target.is_dir():
+            raise NotADirectoryError(f"Configuration path is not a directory: {target}")
         try:
             self.history.remember(target)
         except OSError as error:
@@ -92,15 +96,12 @@ class ConfigurationHistory:
                 directory = Path(value).expanduser().resolve()
             except (OSError, TypeError, ValueError):
                 continue
-            if directory.is_dir() and directory not in result:
+            if directory not in result:
                 result.append(directory)
         return result[:self.max_items]
 
     def remember(self, directory: str | Path) -> list[Path]:
         directory = Path(directory).expanduser().resolve()
-        directory.mkdir(parents=True, exist_ok=True)
-        if not directory.is_dir():
-            raise NotADirectoryError(directory)
         recent = [item for item in self.load() if item != directory]
         recent.insert(0, directory)
         recent = recent[:self.max_items]

@@ -699,8 +699,12 @@ class MordantWindow(Gtk.ApplicationWindow):
 
 class MordantApplication(Gtk.Application):
     def __init__(self, config_directory=None, initial_paths=None, status_messages=True,
-                 application_id=APP_ID, configuration_history_file=None):
-        super().__init__(application_id=application_id, flags=Gio.ApplicationFlags.HANDLES_OPEN)
+                 application_id=APP_ID, configuration_history_file=None,
+                 single_instance=False):
+        flags = Gio.ApplicationFlags.HANDLES_OPEN
+        if not single_instance:
+            flags |= Gio.ApplicationFlags.NON_UNIQUE
+        super().__init__(application_id=application_id, flags=flags)
         self.configuration = Configuration(config_directory, configuration_history_file)
         self.initial_paths = initial_paths
         self.status_messages = status_messages

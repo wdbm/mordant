@@ -43,6 +43,7 @@ class ConfigurationDialogue(Gtk.Window):
         if not recents:
             recent_box.append(Gtk.Label(label="No recent configurations.", xalign=0))
         for number, path in enumerate(recents, 1):
+            available = path.is_dir()
             row = Gtk.Box(spacing=10, margin_start=8, margin_end=8,
                           margin_top=6, margin_bottom=6)
             row.append(Gtk.Label(label=f"{number}"))
@@ -54,7 +55,12 @@ class ConfigurationDialogue(Gtk.Window):
                 marker = Gtk.Label(label="Current")
                 marker.add_css_class("dim-label")
                 row.append(marker)
-            button = Gtk.Button(tooltip_text=str(path))
+            elif not available:
+                marker = Gtk.Label(label="Unavailable")
+                marker.add_css_class("dim-label")
+                row.append(marker)
+            tooltip = str(path) if available else f"{path}\nConfiguration directory is unavailable"
+            button = Gtk.Button(tooltip_text=tooltip)
             button.set_child(row)
             button.connect("clicked", lambda _button, selected=path: self.on_select(selected))
             recent_box.append(button)

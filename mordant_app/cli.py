@@ -47,17 +47,23 @@ def main(argv=None):
         print("mordant: no graphical display is available. A desktop session is required.", file=sys.stderr)
         return 1
     directory = options["--config-directory"]
-    app = MordantApplication(Path(directory) if directory is not None else None,
-                             status_messages=not options["--no-status-messages"])
-    if options["--gapplication-service"]:
+    service_mode = options["--gapplication-service"]
+    try:
+        app = MordantApplication(Path(directory) if directory is not None else None,
+                                 status_messages=not options["--no-status-messages"],
+                                 single_instance=service_mode)
+    except (OSError, TypeError, ValueError) as error:
+        print(f"mordant: could not use configuration directory: {error}", file=sys.stderr)
+        return 1
+    if service_mode:
         return app.run(["mordant", "--gapplication-service"])
     try:
         app.register(None)
         files = [Gio.File.new_for_path(str(Path(path).expanduser().resolve()))
                  for path in (options["<path>"] or [Path.cwd()])]
-        # Gio's open signal forwards launches to an existing Mordant instance.
+        # NON_UNIQUE makes this a local open signal for this Mordant process.
         app.open(files, "")
-        return 0 if app.get_is_remote() else app.run(["mordant"])
+        return app.run(["mordant"])
     except Exception as error:
         print(f"mordant: {error}", file=sys.stderr)
         return 1
