@@ -1,6 +1,6 @@
 # Mordant
 
-Mordant is a GTK4 media viewer for images and videos which can save media to multiple selected directories at once. Broadly the aim of Mordant is to provide an ergonomic interface for sorting through a large quantity of media files briskly while providing a capable media viewer.
+Mordant is a GTK4 media viewer for images and videos which can save media to multiple selected directories at once. Broadly the aim of Mordant is to provide an ergonomic interface for sorting through a large quantity of media files briskly while providing a capable media viewer. Media filenames common to two or more directories can also be opened as an intersection.
 
 PNG, JPEG, GIF, WEBP, SVG, and diverse video formats are supported. When saving, images and videos are saved in their original format and video screenshots are saved separately. The save dialogue provides multiple directory destinations, copy or move operations, recent directories, and one-step undo functionality.
 
@@ -72,13 +72,20 @@ All installed files are then kept beneath that prefix. The desktop files and vir
 |`Delete`                            |Move the current original file to the system Trash            |
 |`Ctrl+O`                            |Open one or more media files                                  |
 |`Ctrl+Shift+O`                      |Open a media directory                                        |
-|`F5`                                |Refresh the current directory or explicit file list           |
+|`Ctrl+Alt+O`                        |Open media filenames common to multiple directories           |
+|`F5`                                |Refresh the current media source                              |
 |`V` / `Shift+V`                     |Toggle or cycle video subtitles                               |
 |`F`, `F11`, or double left-click    |Toggle fullscreen mode                                        |
 |`Tab`                               |Show or hide controls while in fullscreen mode                |
 |`H`                                 |Show or hide the path and status bar                          |
 |`F1` / `?`                          |Show the keyboard shortcuts window                            |
 |`Escape`                            |Leave fullscreen mode, or close                               |
+
+### Open common files
+
+The `Open common` button or `Ctrl+Alt+O` opens an ordered selection of two or more directories. Only supported media filenames present directly in every selected directory are opened. Matching uses the exact filename, including letter case and suffix, and does not compare file contents or search subdirectories.
+
+One representative is displayed for each common filename. It is taken from the first directory, marked `Primary` in the dialogue. The other directories are used only to establish that the filename is common, so Save, Move and Trash affect only the displayed primary-directory file. `F5` scans all selected directories again and recomputes the intersection.
 
 ### Save dialogue controls
 

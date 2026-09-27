@@ -14,6 +14,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 
+from .common_directories_dialogue import CommonDirectoriesDialogue
 from .configuration import Configuration
 from .configuration_dialogue import ConfigurationDialogue
 from .images import ImageView
@@ -33,7 +34,8 @@ Shift+Left / Shift+Right        Seek videos backward or forward by 3 seconds
 Ctrl+Left / Ctrl+Right          Seek videos backward or forward by 1 minute
 Ctrl+O                          Open one or more media files
 Ctrl+Shift+O                    Open a media directory
-F5                              Refresh the current directory or explicit file list
+Ctrl+Alt+O                      Open media filenames common to multiple directories
+F5                              Refresh the current media source
 
 Save and organise
 S                               Open the save dialogue for the original media file
@@ -91,6 +93,7 @@ class MordantWindow(Gtk.ApplicationWindow):
         self._show_status = True
         self._dialogue = None
         self._chooser = None
+        self._common_directories_window = None
         self._configuration_window = None
         self.last_error = None
         self._display_path = None
@@ -117,8 +120,13 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.open_directory_button = self._button(
             "Open directory", lambda: self.choose_media(True), "Open a media directory (Ctrl+Shift+O)",
         )
+        self.open_common_button = self._button(
+            "Open common", self.open_common_directories,
+            "Open media filenames present in multiple directories (Ctrl+Alt+O)",
+        )
         self.header.pack_start(self.open_files_button)
         self.header.pack_start(self.open_directory_button)
+        self.header.pack_start(self.open_common_button)
         self.configuration_button = self._button(
             "Config...", self.open_configuration_dialogue,
             f"Choose configuration directory\nCurrent: {app.config_directory}",
@@ -237,7 +245,11 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.video.clear()
         path = self.library.current
         if path is None:
-            self.empty.set_text("No matching media. Open a directory or choose a different filter.")
+            if self.library.intersection_source is not None and not self.library.paths:
+                count = len(self.library.intersection_source.directories)
+                self.empty.set_text(f"No media files are common to all {count} directories.")
+            else:
+                self.empty.set_text("No matching media. Open a directory or choose a different filter.")
             self.stack.set_visible_child_name("empty")
         elif not path.is_file():
             self.empty.set_text(f"File no longer exists:\n{path}\nPress F5 to refresh.")
@@ -348,7 +360,7 @@ class MordantWindow(Gtk.ApplicationWindow):
             self.show_message(str(message), persistent=True)
 
     def choose_media(self, directory=False):
-        if self.busy or self._chooser is not None:
+        if self.busy or self._chooser is not None or self._common_directories_window is not None:
             return
         chooser = Gtk.FileChooserNative.new(
             "Open directory" if directory else "Open images and videos", self,
@@ -379,6 +391,60 @@ class MordantWindow(Gtk.ApplicationWindow):
         chooser.connect("response", response)
         self._chooser = chooser
         chooser.show()
+
+    def open_common_directories(self):
+        if self.busy or self._chooser is not None:
+            return None
+        if self._common_directories_window is not None:
+            self._common_directories_window.present()
+            return self._common_directories_window
+        source = self.library.intersection_source
+        initial_directories = source.directories if source is not None else ()
+        if self.library.current is not None:
+            initial_directory = self.library.current.parent
+        elif self.library.directory is not None:
+            initial_directory = self.library.directory
+        elif source is not None:
+            initial_directory = source.primary_directory
+        else:
+            initial_directory = None
+        dialogue = CommonDirectoriesDialogue(
+            self,
+            self._open_common_selection,
+            initial_directories=initial_directories,
+            initial_directory=initial_directory,
+        )
+        self._common_directories_window = dialogue
+        dialogue.connect("close-request", self._common_directories_closed)
+        dialogue.connect("unrealize", self._common_directories_closed)
+        dialogue.present()
+        dialogue.focus_cancel_button()
+        return dialogue
+
+    def _common_directories_closed(self, dialogue, *_args):
+        if self._common_directories_window is dialogue:
+            self._common_directories_window = None
+        return False
+
+    def _open_common_selection(self, directories):
+        if self.busy:
+            return False
+        try:
+            self.library.open_intersection(directories)
+        except (ValueError, OSError) as error:
+            self.show_error(str(error))
+            if self._common_directories_window is not None:
+                self._common_directories_window.set_message(str(error))
+            return False
+        self.filter_widget.set_selected(0)
+        self.show_current()
+        file_count = len(self.library.paths)
+        directory_count = len(self.library.intersection_source.directories)
+        file_noun = "file" if file_count == 1 else "files"
+        self.show_message(
+            f"Opened {file_count} media {file_noun} common to {directory_count} directories."
+        )
+        return True
 
     @property
     def store(self):
@@ -615,11 +681,14 @@ class MordantWindow(Gtk.ApplicationWindow):
             return True
         ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
         shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
+        alt = bool(state & Gdk.ModifierType.ALT_MASK)
         char = chr(Gdk.keyval_to_unicode(key)).lower() if Gdk.keyval_to_unicode(key) else ""
         path = self.library.current
         video = path is not None and media_kind(path) == "video"
         if key == Gdk.KEY_Escape:
             self.unfullscreen() if self.props.fullscreened else self.close()
+        elif ctrl and alt and char == "o":
+            self.open_common_directories()
         elif ctrl and char == "o":
             self.choose_media(shift)
         elif ctrl and char == "s":
@@ -692,6 +761,9 @@ class MordantWindow(Gtk.ApplicationWindow):
             self._inhibit_cookie = 0
         if self._chooser is not None:
             self._chooser.destroy()
+        if self._common_directories_window is not None:
+            self._common_directories_window.destroy()
+            self._common_directories_window = None
         if self._configuration_window is not None:
             self._configuration_window.destroy()
             self._configuration_window = None
