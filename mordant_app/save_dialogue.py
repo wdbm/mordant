@@ -14,6 +14,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 from gi.repository import Gdk, Gio, Gtk, Pango
 
+from .clear_recents_dialogue import ClearRecentsDialogue
 from .recent_directories import (
     RECENT_DIRECTORY_KEYS,
     RECENT_DIRECTORY_LISTING_MODE_ALPHABETICAL_NAME,
@@ -57,6 +58,7 @@ class SaveDialogue(Gtk.Window):
         self.recent_buttons: dict[str, Gtk.ToggleButton] = {}
         self.list_view = False
         self._browse_chooser = None
+        self._clear_recents_window = None
         self._directory_popover = None
         self._undo_window = None
         self.browse_initial_directory = self.source_path.parent if self.source_path else None
@@ -409,6 +411,24 @@ class SaveDialogue(Gtk.Window):
         self.filename_entry.grab_focus()
 
     def _clear_recents(self, *_args):
+        if self._clear_recents_window is not None:
+            self._clear_recents_window.present()
+            return
+        confirmation = ClearRecentsDialogue(self, self._confirm_clear_recents)
+        self._clear_recents_window = confirmation
+        confirmation.connect("close-request", self._clear_recents_closed)
+        confirmation.connect("unrealize", self._clear_recents_closed)
+        confirmation.present()
+        confirmation.focus_cancel_button()
+
+    def _clear_recents_closed(self, dialogue, *_args):
+        if self._clear_recents_window is dialogue:
+            self._clear_recents_window = None
+        return False
+
+    def _confirm_clear_recents(self, *_args):
+        if self._clear_recents_window is not None:
+            self._clear_recents_window.close()
         try:
             self.session.clear_recents()
         except OSError as error:
@@ -520,6 +540,8 @@ class SaveDialogue(Gtk.Window):
         if self._browse_chooser is not None:
             self._browse_chooser.destroy()
             self._browse_chooser = None
+        if self._clear_recents_window is not None:
+            self._clear_recents_window.close()
         if self._undo_window is not None:
             self._undo_window.close()
         return False
