@@ -11,6 +11,7 @@ Options:
     -h --help                       Show this help text.
     --version                       Show the version.
     --config-directory=<directory>  Use the specified configuration directory.
+    --max-recents=<count>           Maximum recent-directory buttons [default: unlimited].
     --status-messages               Show transfer status messages (the default).
     --no-status-messages            Hide transfer status messages.
     --gapplication-service          Run as a D-Bus application service.
@@ -31,11 +32,32 @@ from docopt import DocoptExit, docopt
 from . import __VERSION__
 
 
+def parse_max_recents(value: str) -> int | None:
+    """Convert the docopt value into a positive limit or no limit."""
+
+    if value.casefold() == "unlimited":
+        return None
+    try:
+        limit = int(value)
+    except ValueError as error:
+        raise ValueError(
+            "--max-recents must be a positive integer or 'unlimited'"
+        ) from error
+    if limit < 1:
+        raise ValueError("--max-recents must be a positive integer or 'unlimited'")
+    return limit
+
+
 def main(argv=None):
     try:
         options = docopt(__doc__, argv=argv, version=f"mordant {__VERSION__}")
     except DocoptExit as error:
         print(str(error), file=sys.stderr)
+        return 2
+    try:
+        max_recents = parse_max_recents(options["--max-recents"])
+    except ValueError as error:
+        print(f"mordant: {error}", file=sys.stderr)
         return 2
     try:
         from gi.repository import Gio
@@ -49,9 +71,12 @@ def main(argv=None):
     directory = options["--config-directory"]
     service_mode = options["--gapplication-service"]
     try:
-        app = MordantApplication(Path(directory) if directory is not None else None,
-                                 status_messages=not options["--no-status-messages"],
-                                 single_instance=service_mode)
+        app = MordantApplication(
+            Path(directory) if directory is not None else None,
+            status_messages=not options["--no-status-messages"],
+            single_instance=service_mode,
+            max_recents=max_recents,
+        )
     except (OSError, TypeError, ValueError) as error:
         print(f"mordant: could not use configuration directory: {error}", file=sys.stderr)
         return 1

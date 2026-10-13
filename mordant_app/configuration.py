@@ -35,8 +35,10 @@ class Configuration:
         self,
         directory: str | Path | None = None,
         history_file: str | Path | None = None,
+        max_recents: int | None = None,
     ):
         self.history = ConfigurationHistory(history_file)
+        self.max_recents = max_recents
         self.directory = None
         self.store = None
         self.session = None
@@ -64,7 +66,10 @@ class Configuration:
         else:
             self.history_error = None
         if target != self.directory:
-            store = RecentDirectoryStore(target / "recent_directories.json")
+            store = RecentDirectoryStore(
+                target / "recent_directories.json",
+                max_recents=self.max_recents,
+            )
             session = SaveSession(store)
             self.store, self.session, self.directory = store, session, target
             self.manager.recent_store = store

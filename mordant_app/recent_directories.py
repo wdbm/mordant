@@ -21,9 +21,14 @@ RECENT_DIRECTORY_LISTING_MODE_MOST_RECENT = "most_recent"
 
 
 class RecentDirectoryStore:
-    def __init__(self, recents_file: str | Path, max_recents: int = 80):
+    def __init__(self, recents_file: str | Path, max_recents: int | None = None):
         self.recents_file = Path(recents_file).expanduser()
-        self.max_recents = max(1, int(max_recents))
+        if max_recents is None:
+            self.max_recents = None
+        else:
+            self.max_recents = int(max_recents)
+            if self.max_recents < 1:
+                raise ValueError("max_recents must be a positive integer or None")
 
     def load(self) -> list[str]:
         data = read_json(self.recents_file, [])
@@ -59,7 +64,10 @@ class RecentDirectoryStore:
         return Path(recents[0]).resolve() if recents else None
 
     def all(self) -> list[Path]:
-        return [Path(path).resolve() for path in self.load()[: self.max_recents]]
+        recents = self.load()
+        if self.max_recents is not None:
+            recents = recents[:self.max_recents]
+        return [Path(path).resolve() for path in recents]
 
     def listed(self, listing_mode: str = RECENT_DIRECTORY_LISTING_MODE_MOST_RECENT,
                query: str = "") -> list[Path]:
