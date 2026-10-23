@@ -114,19 +114,8 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.title_label = Gtk.Label(label="mordant", ellipsize=Pango.EllipsizeMode.MIDDLE)
         self.title_label.set_max_width_chars(32)
         self.header.set_title_widget(self.title_label)
-        self.open_files_button = self._button(
-            "Open files", lambda: self.choose_media(), "Open media files (Ctrl+O)",
-        )
-        self.open_directory_button = self._button(
-            "Open directory", lambda: self.choose_media(True), "Open a media directory (Ctrl+Shift+O)",
-        )
-        self.open_common_button = self._button(
-            "Open common", self.open_common_directories,
-            "Open media filenames present in multiple directories (Ctrl+Alt+O)",
-        )
-        self.header.pack_start(self.open_files_button)
-        self.header.pack_start(self.open_directory_button)
-        self.header.pack_start(self.open_common_button)
+        self._build_open_menu()
+        self.header.pack_start(self.open_menu_button)
         self.configuration_button = self._button(
             "Config...", self.open_configuration_dialogue,
             f"Choose configuration directory\nCurrent: {app.config_directory}",
@@ -148,6 +137,51 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.header.pack_end(self.save_button)
         self.undo_button = self._button("Undo", self.request_undo, "Undo the latest transfer (Ctrl+Z)")
         self.header.pack_end(self.undo_button)
+
+    def _build_open_menu(self):
+        self.open_menu_button = Gtk.MenuButton(label="Open")
+        self.open_menu_button.set_tooltip_text(
+            "Choose files or directories to open (Ctrl+O, Ctrl+Shift+O, or Ctrl+Alt+O)"
+        )
+        self.open_menu_popover = Gtk.Popover()
+        menu = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=2,
+            margin_top=6,
+            margin_bottom=6,
+            margin_start=6,
+            margin_end=6,
+        )
+        self.open_menu_buttons = {}
+        for label, callback, tooltip in (
+            ("Open files", lambda: self.choose_media(), "Open media files (Ctrl+O)"),
+            (
+                "Open directory",
+                lambda: self.choose_media(True),
+                "Open a media directory (Ctrl+Shift+O)",
+            ),
+            (
+                "Open common",
+                lambda: self.open_common_directories(),
+                "Open media filenames present in multiple directories (Ctrl+Alt+O)",
+            ),
+        ):
+            button = self._button(
+                label,
+                lambda selected=callback: self._activate_open_menu_item(selected),
+                tooltip,
+            )
+            button.add_css_class("flat")
+            button.set_halign(Gtk.Align.FILL)
+            button.get_child().set_halign(Gtk.Align.START)
+            self.open_menu_buttons[label] = button
+            menu.append(button)
+        self.open_menu_popover.set_child(menu)
+        self.open_menu_button.set_popover(self.open_menu_popover)
+
+    def _activate_open_menu_item(self, callback):
+        self.open_menu_popover.popdown()
+        callback()
 
     def _build_media_area(self):
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
