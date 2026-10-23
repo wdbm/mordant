@@ -47,10 +47,12 @@ class UndoDialogue(Gtk.Window):
         actions.set_halign(Gtk.Align.END)
         content.append(actions)
         cancel = Gtk.Button(label="Cancel")
+        cancel.set_tooltip_text("Keep the last transfer")
         cancel.connect("clicked", lambda *_args: self.close())
         actions.append(cancel)
         self._cancel_button = cancel
         undo = Gtk.Button(label="Undo transfer")
+        undo.set_tooltip_text("Apply the listed changes and undo the last transfer")
         undo.connect("clicked", lambda *_args: on_confirm())
         actions.append(undo)
 

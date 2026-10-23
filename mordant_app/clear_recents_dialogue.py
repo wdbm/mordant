@@ -44,10 +44,14 @@ class ClearRecentsDialogue(Gtk.Window):
         actions.set_halign(Gtk.Align.END)
         content.append(actions)
         cancel = Gtk.Button(label="Cancel")
+        cancel.set_tooltip_text("Keep the recent-directory history")
         cancel.connect("clicked", lambda *_args: self.close())
         actions.append(cancel)
         self._cancel_button = cancel
         clear = Gtk.Button(label="Clear recents")
+        clear.set_tooltip_text(
+            "Clear all remembered recent directories and the current selection"
+        )
         clear.add_css_class("destructive-action")
         clear.connect("clicked", lambda *_args: on_confirm())
         actions.append(clear)

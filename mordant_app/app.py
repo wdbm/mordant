@@ -134,6 +134,9 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.header.pack_start(self.configuration_button)
         self.filter_widget = Gtk.DropDown.new_from_strings(FILTERS)
         self.filter_widget.set_tooltip_text("Show all media, only images, or only videos")
+        filter_button = self.filter_widget.get_first_child()
+        if isinstance(filter_button, Gtk.Button):
+            filter_button.set_tooltip_text("Show all media, only images, or only videos")
         self.filter_widget.connect("notify::selected", self._filter_changed)
         self.header.pack_start(self.filter_widget)
         fullscreen_button = self._button("", self.toggle_fullscreen, "Fullscreen (F11)")

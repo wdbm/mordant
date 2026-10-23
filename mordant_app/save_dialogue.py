@@ -92,6 +92,7 @@ class SaveDialogue(Gtk.Window):
         self.filename_entry = Gtk.Entry()
         self.filename_entry.set_hexpand(True)
         self.filename_entry.set_text(self.source_path.name if self.source_path else "")
+        self.filename_entry.set_tooltip_text("Filename to use in each selected destination")
         filename_row.append(self.filename_entry)
         outer.append(filename_row)
 
@@ -111,6 +112,9 @@ class SaveDialogue(Gtk.Window):
         alphabetical_name = Gtk.CheckButton(label="Alphabetical (directory name)")
         alphabetical_path = Gtk.CheckButton(label="Alphabetical (full path)")
         most_recent = Gtk.CheckButton(label="Most recent")
+        alphabetical_name.set_tooltip_text("Order recent directories by final directory name")
+        alphabetical_path.set_tooltip_text("Order recent directories by their full paths")
+        most_recent.set_tooltip_text("Order recent directories by most recent use")
         alphabetical_path.set_group(alphabetical_name)
         most_recent.set_group(alphabetical_name)
         self.listing_buttons = {}
@@ -124,9 +128,11 @@ class SaveDialogue(Gtk.Window):
             button.connect("toggled", self._set_listing_mode, mode)
             listing_options.append(button)
         list_button = Gtk.CheckButton(label="Full-path list")
+        list_button.set_tooltip_text("Show one recent directory per row with its full path")
         list_button.connect("toggled", self._change_view)
         listing_options.append(list_button)
         clear_button = Gtk.Button(label="Clear recents")
+        clear_button.set_tooltip_text("Clear remembered recent directories and deselect them")
         clear_button.connect("clicked", self._clear_recents)
         listing_options.append(clear_button)
 
@@ -152,19 +158,34 @@ class SaveDialogue(Gtk.Window):
     def _build_transfer_options(self, outer):
         options = self._flow_row()
         outer.append(options)
-        for label, attribute in (
-            ("Move", "move_requested"),
-            ("Overwrite", "overwrite_requested"),
-            ("Open parent directory", "open_parent_directory"),
+        for label, attribute, tooltip in (
+            (
+                "Move",
+                "move_requested",
+                "Move the original file instead of copying it",
+            ),
+            (
+                "Overwrite",
+                "overwrite_requested",
+                "Replace an existing destination file with the same name",
+            ),
+            (
+                "Open parent directory",
+                "open_parent_directory",
+                "Start Browse in the parent of the selected directory",
+            ),
         ):
             button = Gtk.CheckButton(label=label)
+            button.set_tooltip_text(tooltip)
             button.set_active(getattr(self.session, attribute))
             button.connect("toggled", self._change_option, attribute)
             options.append(button)
         browse_button = Gtk.Button(label="Browse...")
+        browse_button.set_tooltip_text("Choose and select another destination directory")
         browse_button.connect("clicked", self._browse)
         options.append(browse_button)
         deselect_button = Gtk.Button(label="Deselect")
+        deselect_button.set_tooltip_text("Deselect all destination directories")
         deselect_button.connect("clicked", self._deselect_directories)
         options.append(deselect_button)
 
@@ -179,15 +200,18 @@ class SaveDialogue(Gtk.Window):
         actions = Gtk.Box(spacing=8)
         outer.append(actions)
         self.undo_button = Gtk.Button(label="Undo")
+        self.undo_button.set_tooltip_text("Review and undo the latest transfer")
         self.undo_button.connect("clicked", self.request_undo)
         actions.append(self.undo_button)
         spacer = Gtk.Box()
         spacer.set_hexpand(True)
         actions.append(spacer)
         cancel_button = Gtk.Button(label="Cancel")
+        cancel_button.set_tooltip_text("Close without saving")
         cancel_button.connect("clicked", lambda *_args: self.close())
         actions.append(cancel_button)
         self.save_button = Gtk.Button(label="Save")
+        self.save_button.set_tooltip_text("Save to all selected directories (Enter)")
         self.save_button.add_css_class("suggested-action")
         self.save_button.connect("clicked", self._do_save)
         actions.append(self.save_button)
@@ -299,7 +323,9 @@ class SaveDialogue(Gtk.Window):
             button.set_halign(Gtk.Align.FILL)
             button.set_valign(Gtk.Align.FILL)
             button.set_child(content)
-            button.set_tooltip_text(path)
+            button.set_tooltip_text(
+                f"{path}\nClick to select or deselect; right-click to remove from recents"
+            )
             button.set_active(self.session.is_selected(path))
             button.connect("toggled", self._toggle_directory_button, path)
             context = Gtk.GestureClick()
@@ -346,6 +372,7 @@ class SaveDialogue(Gtk.Window):
         rectangle.x, rectangle.y, rectangle.width, rectangle.height = int(x), int(y), 1, 1
         popover.set_pointing_to(rectangle)
         remove = Gtk.Button(label="Remove from recent directories")
+        remove.set_tooltip_text("Remove this directory from recent-directory history")
 
         def remove_directory(*_args):
             self._dispose_popover()

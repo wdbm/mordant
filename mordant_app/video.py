@@ -113,6 +113,7 @@ class VideoView(Gtk.Box):
         self.append(self.controls)
         self.progress_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.0, 1.0, 0.1)
         self.progress_scale.set_draw_value(False)
+        self.progress_scale.set_tooltip_text("Seek within the current video")
         self.progress_scale.set_sensitive(False)
         self.progress_scale.connect("value-changed", self._on_progress_changed)
         self.controls.append(self.progress_scale)
@@ -131,6 +132,8 @@ class VideoView(Gtk.Box):
         self.repeat_button.connect("toggled", self._on_repeat_toggled)
         transport.append(self.repeat_button)
         self.volume_button = Gtk.VolumeButton()
+        self.volume_button.set_tooltip_text("Adjust video volume")
+        self._set_volume_button_tooltips()
         self.volume_button.set_value(self.volume)
         self.volume_button.connect("value-changed", self._on_volume_changed)
         transport.append(self.volume_button)
@@ -148,6 +151,26 @@ class VideoView(Gtk.Box):
         """)
         self._css_provider = provider
         Gtk.StyleContext.add_provider_for_display(self.get_display(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def _set_volume_button_tooltips(self) -> None:
+        tooltips = {
+            "list-add-symbolic": "Increase video volume",
+            "list-remove-symbolic": "Decrease video volume",
+        }
+        pending = [self.volume_button.get_first_child()]
+        while pending:
+            widget = pending.pop()
+            if widget is None:
+                continue
+            sibling = widget.get_next_sibling()
+            child = widget.get_first_child()
+            if sibling is not None:
+                pending.append(sibling)
+            if child is not None:
+                pending.append(child)
+            if isinstance(widget, Gtk.Button):
+                tooltip = tooltips.get(widget.get_icon_name(), "Adjust video volume")
+                widget.set_tooltip_text(tooltip)
 
     @property
     def playing(self) -> bool:
