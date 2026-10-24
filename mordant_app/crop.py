@@ -8,6 +8,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 from dataclasses import dataclass
+from fractions import Fraction
 import math
 import os
 from pathlib import Path
@@ -32,16 +33,31 @@ class CropRectangle:
         return self.y + self.height
 
 
-def aspect_value(aspect: tuple[int, int]) -> float:
+AspectRatio = tuple[float, float]
+
+
+def aspect_value(aspect: AspectRatio) -> float:
     width, height = aspect
-    if width < 1 or height < 1:
-        raise ValueError("Crop aspect dimensions must be positive integers.")
+    if (
+        not math.isfinite(width)
+        or not math.isfinite(height)
+        or width <= 0
+        or height <= 0
+    ):
+        raise ValueError("Crop aspect dimensions must be positive real numbers.")
     return width / height
+
+
+def rational_aspect(aspect: AspectRatio) -> tuple[int, int]:
+    aspect_value(aspect)
+    width, height = aspect
+    ratio = (Fraction(str(width)) / Fraction(str(height))).limit_denominator(10000)
+    return ratio.numerator, ratio.denominator
 
 
 def largest_crop(
     image_size: tuple[int, int],
-    aspect: tuple[int, int],
+    aspect: AspectRatio,
     centre: tuple[float, float] | None = None,
 ) -> CropRectangle:
     image_width, image_height = image_size
@@ -77,7 +93,7 @@ def resize_crop(
     corner: str,
     pointer: tuple[float, float],
     image_size: tuple[int, int],
-    aspect: tuple[int, int],
+    aspect: AspectRatio,
     minimum_height: float = 1.0,
 ) -> CropRectangle:
     anchors = {
@@ -106,13 +122,9 @@ def resize_crop(
 def integer_crop_box(
     rectangle: CropRectangle,
     image_size: tuple[int, int],
-    aspect: tuple[int, int],
+    aspect: AspectRatio,
 ) -> tuple[int, int, int, int]:
-    aspect_value(aspect)
-    aspect_width, aspect_height = aspect
-    divisor = math.gcd(aspect_width, aspect_height)
-    aspect_width //= divisor
-    aspect_height //= divisor
+    aspect_width, aspect_height = rational_aspect(aspect)
     factor = math.floor(min(rectangle.width / aspect_width, rectangle.height / aspect_height))
     if factor >= 1:
         width, height = aspect_width * factor, aspect_height * factor
@@ -138,7 +150,7 @@ def crop_image(
     source_path: str | Path,
     output_path: str | Path,
     rectangle: CropRectangle,
-    aspect: tuple[int, int],
+    aspect: AspectRatio,
 ) -> Path:
     source_path = Path(source_path)
     output_path = Path(output_path)

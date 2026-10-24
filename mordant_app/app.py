@@ -293,13 +293,17 @@ class MordantWindow(Gtk.ApplicationWindow):
             crop_aspect_button.set_tooltip_text("Choose the crop aspect ratio")
         self.crop_aspect_dropdown.connect("notify::selected", self._crop_aspect_selected)
         self.crop_controls.append(self.crop_aspect_dropdown)
-        self.crop_width_spin = Gtk.SpinButton.new_with_range(1, 100, 1)
+        self.crop_width_spin = Gtk.SpinButton.new_with_range(0.001, 100, 1)
         self.crop_width_spin.set_value(3)
-        self.crop_width_spin.set_width_chars(2)
+        self.crop_width_spin.set_digits(3)
+        self.crop_width_spin.set_numeric(True)
+        self.crop_width_spin.set_width_chars(7)
         self.crop_width_spin.set_tooltip_text("Custom crop width ratio")
-        self.crop_height_spin = Gtk.SpinButton.new_with_range(1, 100, 1)
+        self.crop_height_spin = Gtk.SpinButton.new_with_range(0.001, 100, 1)
         self.crop_height_spin.set_value(2)
-        self.crop_height_spin.set_width_chars(2)
+        self.crop_height_spin.set_digits(3)
+        self.crop_height_spin.set_numeric(True)
+        self.crop_height_spin.set_width_chars(7)
         self.crop_height_spin.set_tooltip_text("Custom crop height ratio")
         self.crop_ratio_separator = Gtk.Label(label=":")
         for spin in (self.crop_width_spin, self.crop_height_spin):
@@ -373,8 +377,8 @@ class MordantWindow(Gtk.ApplicationWindow):
         self._show_custom_crop_aspect(custom)
         if custom:
             aspect = (
-                self.crop_width_spin.get_value_as_int(),
-                self.crop_height_spin.get_value_as_int(),
+                self.crop_width_spin.get_value(),
+                self.crop_height_spin.get_value(),
             )
         else:
             aspect = CROP_ASPECT_PRESETS[selected][1]
@@ -384,8 +388,8 @@ class MordantWindow(Gtk.ApplicationWindow):
         if self.crop_aspect_dropdown.get_selected() >= len(CROP_ASPECT_PRESETS):
             self._set_crop_aspect(
                 (
-                    self.crop_width_spin.get_value_as_int(),
-                    self.crop_height_spin.get_value_as_int(),
+                    self.crop_width_spin.get_value(),
+                    self.crop_height_spin.get_value(),
                 )
             )
 
