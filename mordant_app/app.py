@@ -8,6 +8,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys
+import tempfile
 
 import gi
 gi.require_version("Gtk", "4.0")
@@ -17,6 +18,7 @@ from gi.repository import Gdk, Gio, GLib, Gtk, Pango
 from .common_directories_dialogue import CommonDirectoriesDialogue
 from .configuration import Configuration
 from .configuration_dialogue import ConfigurationDialogue
+from .crop import crop_image, suggested_crop_name
 from .images import ImageView
 from .media import (
     FILTERS, IMAGE_SUFFIXES, VIDEO_SUFFIXES, MediaLibrary,
@@ -27,6 +29,13 @@ from .transfers import format_transfer_status
 from .video import VideoView
 
 APP_ID = "io.github.wdbm.mordant"
+CROP_ASPECT_PRESETS = (
+    ("3:2", (3, 2)),
+    ("4:3", (4, 3)),
+    ("5:4", (5, 4)),
+    ("1:1", (1, 1)),
+    ("16:9", (16, 9)),
+)
 SHORTCUTS = """Browse
 A / Z or Page Up / Page Down    Show the previous or next file
 Left / Right                    Browse images, or seek videos backward or forward by 5 seconds
@@ -57,6 +66,12 @@ Tab                             Show or hide controls while in fullscreen mode
 H                               Show or hide the path and status bar
 F1 / ?                          Show the keyboard shortcuts window
 Escape                          Leave fullscreen mode, or close
+
+Crop mode
+Drag inside the crop            Move the crop selection
+Drag a crop corner              Resize the selection while preserving its aspect ratio
+Enter                           Prepare the crop and open the save dialogue
+Escape                          Cancel cropping
 
 Save dialogue
 Enter                           Save to all selected directories, except while typing in search
@@ -95,6 +110,10 @@ class MordantWindow(Gtk.ApplicationWindow):
         self._chooser = None
         self._common_directories_window = None
         self._configuration_window = None
+        self.crop_aspect = (3, 2)
+        self._crop_temporary_directory = None
+        self._crop_transfer_active = False
+        self._crop_replaces_current = False
         self.last_error = None
         self._display_path = None
         self.status_messages = app.status_messages
@@ -128,9 +147,11 @@ class MordantWindow(Gtk.ApplicationWindow):
             filter_button.set_tooltip_text("Show all media, only images, or only videos")
         self.filter_widget.connect("notify::selected", self._filter_changed)
         self.header.pack_start(self.filter_widget)
-        fullscreen_button = self._button("", self.toggle_fullscreen, "Fullscreen (F11)")
-        fullscreen_button.set_icon_name("view-fullscreen-symbolic")
-        self.header.pack_end(fullscreen_button)
+        self._build_actions_menu()
+        self.header.pack_end(self.actions_menu_button)
+        self.fullscreen_button = self._button("", self.toggle_fullscreen, "Fullscreen (F11)")
+        self.fullscreen_button.set_icon_name("view-fullscreen-symbolic")
+        self.header.pack_end(self.fullscreen_button)
         self.header.pack_end(self._button("?", self.show_help, "Keyboard shortcuts (F1)"))
         self.save_button = self._button("Save...", self.open_save_dialogue, "Save the original file (S)")
         self.save_button.add_css_class("suggested-action")
@@ -183,6 +204,32 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.open_menu_popover.popdown()
         callback()
 
+    def _build_actions_menu(self):
+        self.actions_menu_button = Gtk.MenuButton()
+        self.actions_menu_button.set_icon_name("open-menu-symbolic")
+        self.actions_menu_button.set_tooltip_text("Menu")
+        self.actions_menu_button.set_size_request(36, 36)
+        self.actions_menu_popover = Gtk.Popover()
+        menu = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=2,
+            margin_top=6,
+            margin_bottom=6,
+            margin_start=6,
+            margin_end=6,
+        )
+        self.crop_menu_button = self._button(
+            "Crop",
+            self.start_crop,
+            "Crop the current still image",
+        )
+        self.crop_menu_button.add_css_class("flat")
+        self.crop_menu_button.set_halign(Gtk.Align.FILL)
+        self.crop_menu_button.get_child().set_halign(Gtk.Align.START)
+        menu.append(self.crop_menu_button)
+        self.actions_menu_popover.set_child(menu)
+        self.actions_menu_button.set_popover(self.actions_menu_popover)
+
     def _build_media_area(self):
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.set_child(outer)
@@ -230,8 +277,61 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.pause_image_button = self._button("Pause", self.pause, "Play/pause animation (P)")
         self.image_controls.append(self.pause_image_button)
         self.footer.append(self.image_controls)
+        self._build_crop_controls()
+        self.footer.append(self.crop_controls)
         self.trash_button = self._button("Trash", self.trash_current, "Move original file to Trash (Delete)")
         self.footer.append(self.trash_button)
+
+    def _build_crop_controls(self):
+        self.crop_controls = Gtk.Box(spacing=6)
+        self.crop_controls.append(Gtk.Label(label="Aspect:"))
+        labels = [label for label, _aspect in CROP_ASPECT_PRESETS] + ["Custom..."]
+        self.crop_aspect_dropdown = Gtk.DropDown.new_from_strings(labels)
+        self.crop_aspect_dropdown.set_tooltip_text("Choose the crop aspect ratio")
+        crop_aspect_button = self.crop_aspect_dropdown.get_first_child()
+        if isinstance(crop_aspect_button, Gtk.Button):
+            crop_aspect_button.set_tooltip_text("Choose the crop aspect ratio")
+        self.crop_aspect_dropdown.connect("notify::selected", self._crop_aspect_selected)
+        self.crop_controls.append(self.crop_aspect_dropdown)
+        self.crop_width_spin = Gtk.SpinButton.new_with_range(1, 100, 1)
+        self.crop_width_spin.set_value(3)
+        self.crop_width_spin.set_width_chars(2)
+        self.crop_width_spin.set_tooltip_text("Custom crop width ratio")
+        self.crop_height_spin = Gtk.SpinButton.new_with_range(1, 100, 1)
+        self.crop_height_spin.set_value(2)
+        self.crop_height_spin.set_width_chars(2)
+        self.crop_height_spin.set_tooltip_text("Custom crop height ratio")
+        self.crop_ratio_separator = Gtk.Label(label=":")
+        for spin in (self.crop_width_spin, self.crop_height_spin):
+            spin.connect("value-changed", self._custom_crop_aspect_changed)
+            child = spin.get_first_child()
+            while child is not None:
+                if isinstance(child, Gtk.Button):
+                    child.set_tooltip_text("Adjust the custom crop aspect ratio")
+                child = child.get_next_sibling()
+            self.crop_controls.append(spin)
+            if spin is self.crop_width_spin:
+                self.crop_controls.append(self.crop_ratio_separator)
+        self.crop_swap_button = self._button(
+            "Swap",
+            self.swap_crop_aspect,
+            "Swap crop width and height",
+        )
+        self.crop_controls.append(self.crop_swap_button)
+        self.crop_cancel_button = self._button(
+            "Cancel",
+            self.cancel_crop,
+            "Cancel cropping (Escape)",
+        )
+        self.crop_controls.append(self.crop_cancel_button)
+        self.crop_save_button = self._button(
+            "Save crop...",
+            self.save_crop,
+            "Accept the crop and choose save directories",
+        )
+        self.crop_save_button.add_css_class("suggested-action")
+        self.crop_controls.append(self.crop_save_button)
+        self._show_custom_crop_aspect(False)
 
     def _connect_controllers(self):
         keys = Gtk.EventControllerKey()
@@ -240,7 +340,12 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.add_controller(keys)
         click = Gtk.GestureClick()
         click.set_button(1)
-        click.connect("pressed", lambda gesture, count, x, y: self.toggle_fullscreen() if count == 2 else None)
+        click.connect(
+            "pressed",
+            lambda gesture, count, x, y: (
+                self.toggle_fullscreen() if count == 2 and not self.images.cropping else None
+            ),
+        )
         self.stack.add_controller(click)
         motion = Gtk.EventControllerMotion()
         motion.connect("motion", self._pointer_moved)
@@ -256,6 +361,136 @@ class MordantWindow(Gtk.ApplicationWindow):
         button = Gtk.Button(label=label, tooltip_text=tooltip)
         button.connect("clicked", lambda *_: callback())
         return button
+
+    def _show_custom_crop_aspect(self, visible):
+        self.crop_width_spin.set_visible(visible)
+        self.crop_ratio_separator.set_visible(visible)
+        self.crop_height_spin.set_visible(visible)
+
+    def _crop_aspect_selected(self, *_args):
+        selected = self.crop_aspect_dropdown.get_selected()
+        custom = selected >= len(CROP_ASPECT_PRESETS)
+        self._show_custom_crop_aspect(custom)
+        if custom:
+            aspect = (
+                self.crop_width_spin.get_value_as_int(),
+                self.crop_height_spin.get_value_as_int(),
+            )
+        else:
+            aspect = CROP_ASPECT_PRESETS[selected][1]
+        self._set_crop_aspect(aspect)
+
+    def _custom_crop_aspect_changed(self, *_args):
+        if self.crop_aspect_dropdown.get_selected() >= len(CROP_ASPECT_PRESETS):
+            self._set_crop_aspect(
+                (
+                    self.crop_width_spin.get_value_as_int(),
+                    self.crop_height_spin.get_value_as_int(),
+                )
+            )
+
+    def _set_crop_aspect(self, aspect):
+        self.crop_aspect = aspect
+        if self.images.cropping:
+            self.images.set_crop_aspect(aspect)
+
+    def swap_crop_aspect(self):
+        aspect = (self.crop_aspect[1], self.crop_aspect[0])
+        for index, (_label, preset) in enumerate(CROP_ASPECT_PRESETS):
+            if preset == aspect:
+                self.crop_aspect_dropdown.set_selected(index)
+                self._set_crop_aspect(aspect)
+                return
+        self.crop_width_spin.set_value(aspect[0])
+        self.crop_height_spin.set_value(aspect[1])
+        self.crop_aspect_dropdown.set_selected(len(CROP_ASPECT_PRESETS))
+        self._set_crop_aspect(aspect)
+
+    def start_crop(self):
+        self.actions_menu_popover.popdown()
+        if self.busy or self._dialogue is not None or not self.images.can_crop:
+            return
+        if self.images.begin_crop(self.crop_aspect):
+            self._update_ui()
+
+    def cancel_crop(self):
+        if not self.images.cropping:
+            return
+        self.images.cancel_crop()
+        self._update_ui()
+
+    def save_crop(self):
+        if self.busy or not self.images.cropping or self.library.current is None:
+            return
+        source = self.library.current
+        rectangle = self.images.crop_rectangle
+        aspect = self.crop_aspect
+        self._cleanup_crop_temporary_directory()
+        temporary_directory = tempfile.TemporaryDirectory(prefix="mordant-crop-")
+        self._crop_temporary_directory = temporary_directory
+        suggested_name = suggested_crop_name(source)
+        output = Path(temporary_directory.name) / suggested_name
+        self.busy = True
+        self.show_message(f"Preparing {suggested_name}...", persistent=True)
+        self._update_ui()
+        future = self.executor.submit(crop_image, source, output, rectangle, aspect)
+
+        def completed(finished):
+            GLib.idle_add(
+                self._crop_rendered,
+                source,
+                suggested_name,
+                finished,
+            )
+
+        future.add_done_callback(completed)
+
+    def _crop_rendered(self, source, suggested_name, future):
+        self.busy = False
+        if self.closed:
+            self._cleanup_crop_temporary_directory()
+            return GLib.SOURCE_REMOVE
+        try:
+            output = future.result()
+        except Exception as error:
+            self._cleanup_crop_temporary_directory()
+            self.show_error(f"Crop failed: {error}")
+            self._update_ui()
+            return GLib.SOURCE_REMOVE
+        self.images.cancel_crop()
+        self._update_ui()
+        self._open_save_dialogue(
+            output,
+            on_save=self.perform_crop_transfer,
+            suggested_filename=suggested_name,
+            allow_move=False,
+            browse_initial_directory=source.parent,
+        )
+        return GLib.SOURCE_REMOVE
+
+    def perform_crop_transfer(self, request):
+        current = self.library.current.resolve() if self.library.current is not None else None
+        self._crop_replaces_current = bool(
+            request.overwrite_requested
+            and current is not None
+            and any(
+                (Path(directory) / request.name).resolve() == current
+                for directory in request.destination_directories
+            )
+        )
+        self._crop_transfer_active = True
+        try:
+            self.perform_transfer(request)
+        except Exception:
+            self._crop_transfer_active = False
+            self._crop_replaces_current = False
+            raise
+
+    def _cleanup_crop_temporary_directory(self):
+        temporary_directory = self._crop_temporary_directory
+        self._crop_temporary_directory = None
+        if temporary_directory is not None:
+            temporary_directory.cleanup()
 
     def open_paths(self, paths):
         if self.busy:
@@ -303,7 +538,7 @@ class MordantWindow(Gtk.ApplicationWindow):
         self._media_changed()
 
     def navigate(self, delta):
-        if self.busy or self._dialogue is not None:
+        if self.busy or self._dialogue is not None or self.images.cropping:
             return
         self.library.step(delta)
         self.show_current()
@@ -314,7 +549,7 @@ class MordantWindow(Gtk.ApplicationWindow):
             self.navigate(1)
 
     def _filter_changed(self, *_):
-        if not self._ready or self.busy:
+        if not self._ready or self.busy or self.images.cropping:
             return
         self.library.set_filter(FILTERS[self.filter_widget.get_selected()])
         if self.library.current != self._display_path:
@@ -323,7 +558,7 @@ class MordantWindow(Gtk.ApplicationWindow):
             self._update_ui()
 
     def refresh(self):
-        if self.busy:
+        if self.busy or self.images.cropping:
             return
         try:
             self.library.refresh()
@@ -335,6 +570,7 @@ class MordantWindow(Gtk.ApplicationWindow):
         if not self._ready:
             return
         path = self.library.current
+        cropping = self.images.cropping
         visible = self.library.visible
         position = visible.index(path) + 1 if path in visible else 0
         self.position_label.set_text(f"{position} / {len(visible)}")
@@ -342,14 +578,26 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.set_title(f"{path.name} - mordant" if path else "mordant")
         self.path_label.set_text(str(path) if path else "")
         self.path_label.set_tooltip_text(str(path) if path else "")
-        self.save_button.set_sensitive(not self.busy and (path is not None or bool(self.manager.undo_description())))
-        self.undo_button.set_sensitive(not self.busy and bool(self.manager.undo_description()))
-        self.trash_button.set_sensitive(not self.busy and path is not None)
-        self.previous_button.set_sensitive(not self.busy and bool(visible))
-        self.next_button.set_sensitive(not self.busy and bool(visible))
-        self.filter_widget.set_sensitive(not self.busy)
-        self.configuration_button.set_sensitive(not self.busy and self._dialogue is None)
-        self.image_controls.set_visible(media_kind(path) == "image" if path else False)
+        normal_actions = not self.busy and not cropping
+        self.save_button.set_sensitive(
+            normal_actions and (path is not None or bool(self.manager.undo_description()))
+        )
+        self.undo_button.set_sensitive(normal_actions and bool(self.manager.undo_description()))
+        self.trash_button.set_sensitive(normal_actions and path is not None)
+        self.previous_button.set_sensitive(normal_actions and bool(visible))
+        self.next_button.set_sensitive(normal_actions and bool(visible))
+        self.filter_widget.set_sensitive(normal_actions)
+        self.configuration_button.set_sensitive(normal_actions and self._dialogue is None)
+        self.open_menu_button.set_sensitive(normal_actions)
+        self.actions_menu_button.set_sensitive(not self.busy and not cropping)
+        self.crop_menu_button.set_sensitive(
+            normal_actions and self._dialogue is None and self.images.can_crop
+        )
+        self.image_controls.set_visible(
+            bool(path and media_kind(path) == "image" and not cropping)
+        )
+        self.crop_controls.set_visible(cropping)
+        self.crop_controls.set_sensitive(not self.busy)
         self.pause_image_button.set_visible(self.images.is_animated)
         self.pause_image_button.set_label("Play" if self.images.paused else "Pause")
         self._apply_controls_visibility()
@@ -537,15 +785,35 @@ class MordantWindow(Gtk.ApplicationWindow):
         return bool(paths)
 
     def open_save_dialogue(self):
+        return self._open_save_dialogue(self.library.current)
+
+    def _open_save_dialogue(
+        self,
+        source_path,
+        *,
+        on_save=None,
+        suggested_filename=None,
+        allow_move=True,
+        browse_initial_directory=None,
+    ):
         if self.busy:
             return None
         if self._dialogue is not None:
             self._dialogue.present()
             return self._dialogue
-        if self.library.current is None and not self.manager.undo_description():
+        if source_path is None and not self.manager.undo_description():
             return None
-        dialogue = SaveDialogue(self, self.session, self.manager, self.library.current,
-                            self.perform_transfer, self.after_undo)
+        dialogue = SaveDialogue(
+            self,
+            self.session,
+            self.manager,
+            source_path,
+            on_save or self.perform_transfer,
+            self.after_undo,
+            suggested_filename=suggested_filename,
+            allow_move=allow_move,
+            browse_initial_directory=browse_initial_directory,
+        )
         self._dialogue = dialogue
         dialogue.connect("close-request", lambda *_: self._dialogue_closed(dialogue))
         dialogue.connect("unrealize", lambda *_: self._dialogue_closed(dialogue))
@@ -555,6 +823,8 @@ class MordantWindow(Gtk.ApplicationWindow):
     def _dialogue_closed(self, dialogue):
         if self._dialogue is dialogue:
             self._dialogue = None
+            if self._crop_temporary_directory is not None and not self._crop_transfer_active:
+                self._cleanup_crop_temporary_directory()
             self._update_ui()
         return False
 
@@ -573,7 +843,7 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.show_message("Last transfer undone.")
 
     def quick_save(self, key=None):
-        if self.busy or self.library.current is None:
+        if self.busy or self.images.cropping or self.library.current is None:
             return
         if key is not None:
             destination = self.store.for_key(key, self.session.listing_mode)
@@ -609,6 +879,11 @@ class MordantWindow(Gtk.ApplicationWindow):
 
     def _transfer_finished(self, request, future):
         self.busy = False
+        crop_transfer = self._crop_transfer_active
+        crop_replaces_current = self._crop_replaces_current
+        self._crop_transfer_active = False
+        self._crop_replaces_current = False
+        result = None
         try:
             result = future.result()
         except Exception as error:
@@ -616,6 +891,17 @@ class MordantWindow(Gtk.ApplicationWindow):
                 self.show_current()
             self.show_error(f"Transfer failed: {error}")
         else:
+            if (
+                crop_transfer
+                and crop_replaces_current
+                and result.saved_directories
+                and self.library.current is not None
+                and any(
+                    Path(directory).resolve() == self.library.current.parent.resolve()
+                    for directory in result.saved_directories
+                )
+            ):
+                self.show_current()
             if request.move_requested:
                 if result.saved_directories and not result.errors:
                     self.library.remove(request.source_path)
@@ -631,11 +917,13 @@ class MordantWindow(Gtk.ApplicationWindow):
                 self.show_message(message)
             else:
                 self._hide_toast()
+        if crop_transfer:
+            self._cleanup_crop_temporary_directory()
         self._update_ui()
         return GLib.SOURCE_REMOVE
 
     def trash_current(self):
-        if self.busy or self.library.current is None:
+        if self.busy or self.images.cropping or self.library.current is None:
             return
         path = self.library.current
         try:
@@ -712,6 +1000,14 @@ class MordantWindow(Gtk.ApplicationWindow):
         close_button.grab_focus()
 
     def _key_pressed(self, controller, key, code, state):
+        if self.images.cropping:
+            if key == Gdk.KEY_Escape:
+                self.cancel_crop()
+                return True
+            if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and not is_text_input(self.get_focus()):
+                self.save_crop()
+                return True
+            return False if is_text_input(self.get_focus()) else True
         if is_text_input(self.get_focus()):
             return False
         if self.busy:
@@ -789,6 +1085,7 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.video.close()
         self.configuration.close()
         self.executor.shutdown(wait=False)
+        self._cleanup_crop_temporary_directory()
         for job in (self._toast_job, self._cursor_job):
             if job:
                 GLib.source_remove(job)

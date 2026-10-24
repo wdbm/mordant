@@ -83,7 +83,7 @@ All installed files are then kept beneath that prefix. The desktop files and vir
 
 ### Open common files
 
-The `Open common` button or `Ctrl+Alt+O` opens an ordered selection of two or more directories. Only supported media filenames present directly in every selected directory are opened. Matching uses the exact filename, including letter case and suffix, and does not compare file contents or search subdirectories.
+The `Open common` option in the `Open` menu (`Ctrl+Alt+O`) opens an ordered selection of two or more directories. Only supported media filenames present directly in every selected directory are opened. Matching uses the exact filename, including letter case and suffix, and does not compare file contents or search subdirectories.
 
 One representative is displayed for each common filename. It is taken from the first directory, marked `Primary` in the dialogue. The other directories are used only to establish that the filename is common, so Save, Move and Trash affect only the displayed primary-directory file. `F5` scans all selected directories again and recomputes the intersection.
 

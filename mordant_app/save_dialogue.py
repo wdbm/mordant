@@ -45,6 +45,10 @@ class SaveDialogue(Gtk.Window):
         source_path: Path | None,
         on_save: Callable[[TransferRequest], object],
         on_undo: Callable[[Path | None], object],
+        *,
+        suggested_filename: str | None = None,
+        allow_move: bool = True,
+        browse_initial_directory: Path | None = None,
     ):
         super().__init__(title="Save to directories", transient_for=parent, modal=True)
         self.set_destroy_with_parent(True)
@@ -55,13 +59,19 @@ class SaveDialogue(Gtk.Window):
         self.source_path = Path(source_path).resolve() if source_path is not None else None
         self.on_save = on_save
         self.on_undo = on_undo
+        self.suggested_filename = suggested_filename
+        self.allow_move = allow_move
         self.recent_buttons: dict[str, Gtk.ToggleButton] = {}
         self.list_view = False
         self._browse_chooser = None
         self._clear_recents_window = None
         self._directory_popover = None
         self._undo_window = None
-        self.browse_initial_directory = self.source_path.parent if self.source_path else None
+        self.browse_initial_directory = (
+            Path(browse_initial_directory).resolve()
+            if browse_initial_directory is not None
+            else self.source_path.parent if self.source_path else None
+        )
 
         outer = self._build_outer()
         self._build_filename_row(outer)
@@ -91,7 +101,10 @@ class SaveDialogue(Gtk.Window):
         filename_row.append(Gtk.Label(label="Filename:", xalign=0))
         self.filename_entry = Gtk.Entry()
         self.filename_entry.set_hexpand(True)
-        self.filename_entry.set_text(self.source_path.name if self.source_path else "")
+        self.filename_entry.set_text(
+            self.suggested_filename
+            or (self.source_path.name if self.source_path else "")
+        )
         self.filename_entry.set_tooltip_text("Filename to use in each selected destination")
         filename_row.append(self.filename_entry)
         outer.append(filename_row)
@@ -158,6 +171,7 @@ class SaveDialogue(Gtk.Window):
     def _build_transfer_options(self, outer):
         options = self._flow_row()
         outer.append(options)
+        self.transfer_option_buttons = {}
         for label, attribute, tooltip in (
             (
                 "Move",
@@ -175,10 +189,13 @@ class SaveDialogue(Gtk.Window):
                 "Start Browse in the parent of the selected directory",
             ),
         ):
+            if label == "Move" and not self.allow_move:
+                continue
             button = Gtk.CheckButton(label=label)
             button.set_tooltip_text(tooltip)
             button.set_active(getattr(self.session, attribute))
             button.connect("toggled", self._change_option, attribute)
+            self.transfer_option_buttons[attribute] = button
             options.append(button)
         browse_button = Gtk.Button(label="Browse...")
         browse_button.set_tooltip_text("Choose and select another destination directory")
@@ -487,6 +504,7 @@ class SaveDialogue(Gtk.Window):
         request = self.session.request(
             self.source_path, typed_name,
             destinations=destinations, default_suffix=self.source_path.suffix,
+            move_requested=False if not self.allow_move else None,
         )
         try:
             self.on_save(request)
