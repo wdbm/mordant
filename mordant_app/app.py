@@ -70,6 +70,7 @@ Escape                          Leave fullscreen mode, or close
 Crop mode
 Drag inside the crop            Move the crop selection
 Drag a crop corner              Resize the selection while preserving its aspect ratio
+Rotate button                   Rotate the image counterclockwise by 90 degrees
 Enter                           Prepare the crop and open the save dialogue
 Escape                          Cancel cropping
 
@@ -219,9 +220,9 @@ class MordantWindow(Gtk.ApplicationWindow):
             margin_end=6,
         )
         self.crop_menu_button = self._button(
-            "Crop",
+            "Crop and rotate",
             self.start_crop,
-            "Crop the current still image",
+            "Crop or rotate the current still image",
         )
         self.crop_menu_button.add_css_class("flat")
         self.crop_menu_button.set_halign(Gtk.Align.FILL)
@@ -322,6 +323,16 @@ class MordantWindow(Gtk.ApplicationWindow):
             "Swap crop width and height",
         )
         self.crop_controls.append(self.crop_swap_button)
+        self.crop_rotate_button = Gtk.Button(
+            icon_name="object-rotate-left-symbolic",
+            tooltip_text="Rotate counterclockwise 90 degrees",
+        )
+        self.crop_rotate_button.set_size_request(34, 34)
+        self.crop_rotate_button.connect(
+            "clicked",
+            lambda *_: self.rotate_crop_counterclockwise(),
+        )
+        self.crop_controls.append(self.crop_rotate_button)
         self.crop_cancel_button = self._button(
             "Cancel",
             self.cancel_crop,
@@ -423,12 +434,18 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.images.cancel_crop()
         self._update_ui()
 
+    def rotate_crop_counterclockwise(self):
+        if self.busy:
+            return
+        self.images.rotate_crop_counterclockwise()
+
     def save_crop(self):
         if self.busy or not self.images.cropping or self.library.current is None:
             return
         source = self.library.current
         rectangle = self.images.crop_rectangle
         aspect = self.crop_aspect
+        rotation_quarters = self.images.crop_rotation_quarters
         self._cleanup_crop_temporary_directory()
         temporary_directory = tempfile.TemporaryDirectory(prefix="mordant-crop-")
         self._crop_temporary_directory = temporary_directory
@@ -437,7 +454,14 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.busy = True
         self.show_message(f"Preparing {suggested_name}...", persistent=True)
         self._update_ui()
-        future = self.executor.submit(crop_image, source, output, rectangle, aspect)
+        future = self.executor.submit(
+            crop_image,
+            source,
+            output,
+            rectangle,
+            aspect,
+            rotation_quarters,
+        )
 
         def completed(finished):
             GLib.idle_add(

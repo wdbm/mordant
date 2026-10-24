@@ -17,9 +17,16 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 from gi.repository import Gdk, GLib, Gtk
 
-from .crop import CropRectangle, largest_crop, move_crop, resize_crop
+from .crop import (
+    CropRectangle,
+    largest_crop,
+    move_crop,
+    resize_crop,
+    rotate_counterclockwise,
+)
 from .image_processing import (
     CACHE_MAX_PREFETCHES,
+    CachedFrame,
     ImageCache,
     cairo_surface,
     clamp_offsets,
@@ -75,7 +82,9 @@ class ImageView(Gtk.DrawingArea):
         self._pan_origin = None
         self.crop_rectangle = None
         self.crop_aspect = (3, 2)
+        self.crop_rotation_quarters = 0
         self._crop_drag = None
+        self._crop_frame = None
         self._surface_scroll_remainder = 0.0
 
         motion = Gtk.EventControllerMotion.new()
@@ -129,7 +138,8 @@ class ImageView(Gtk.DrawingArea):
         self.zoom = 1.0
         self._auto_fit = True
         self._animation_deadline = self._pan_origin = None
-        self.crop_rectangle = self._crop_drag = None
+        self.crop_rectangle = self._crop_drag = self._crop_frame = None
+        self.crop_rotation_quarters = 0
         self._reset_scroll_accumulator()
         self.queue_draw()
 
@@ -186,12 +196,18 @@ class ImageView(Gtk.DrawingArea):
     def _scale(self):
         if self.data is None:
             return 1.0
-        width, height = self.data.frames[self.frame_index].image.size
+        width, height = self._display_frame().image.size
         return min(self._view_size[0] / width, self._view_size[1] / height) * self.zoom
 
     def _clamp(self):
         if self.data is not None:
-            self.ox, self.oy = clamp_offsets(self.data.frames[self.frame_index].image.size, self._view_size, self._scale(), self.ox, self.oy)
+            self.ox, self.oy = clamp_offsets(
+                self._display_frame().image.size,
+                self._view_size,
+                self._scale(),
+                self.ox,
+                self.oy,
+            )
 
     def _resize(self, widget, width, height):
         old_scale = self._scale()
@@ -212,7 +228,7 @@ class ImageView(Gtk.DrawingArea):
     def _centre(self):
         if self.data is None:
             return
-        image = self.data.frames[self.frame_index].image
+        image = self._display_frame().image
         scale = self._scale()
         self.ox = (self._view_size[0] - image.width * scale) / 2
         self.oy = (self._view_size[1] - image.height * scale) / 2
@@ -310,7 +326,7 @@ class ImageView(Gtk.DrawingArea):
                     image_size,
                 )
             else:
-                decoded_height = self.data.frames[self.frame_index].image.height
+                decoded_height = self._display_frame().image.height
                 source_height_per_view_pixel = image_size[1] / decoded_height / self._scale()
                 self.crop_rectangle = resize_crop(
                     original,
@@ -335,12 +351,18 @@ class ImageView(Gtk.DrawingArea):
         self._crop_drag = None
 
     def _crop_image_size(self):
-        return self.data.original_size or self.data.frames[self.frame_index].image.size
+        size = self.data.original_size or self.data.frames[self.frame_index].image.size
+        return size[::-1] if self.crop_rotation_quarters % 2 else size
+
+    def _display_frame(self):
+        if self._crop_frame is not None:
+            return self._crop_frame
+        return self.data.frames[self.frame_index]
 
     def _crop_view_rectangle(self):
         rectangle = self.crop_rectangle
         original_width, original_height = self._crop_image_size()
-        decoded = self.data.frames[self.frame_index].image
+        decoded = self._display_frame().image
         scale = self._scale()
         factor_x = decoded.width / original_width * scale
         factor_y = decoded.height / original_height * scale
@@ -353,7 +375,7 @@ class ImageView(Gtk.DrawingArea):
 
     def _view_to_crop(self, x, y):
         original_width, original_height = self._crop_image_size()
-        decoded = self.data.frames[self.frame_index].image
+        decoded = self._display_frame().image
         scale = self._scale()
         return (
             (x - self.ox) / (decoded.width / original_width * scale),
@@ -364,6 +386,8 @@ class ImageView(Gtk.DrawingArea):
         if not self.can_crop:
             return False
         self.crop_aspect = aspect
+        self.crop_rotation_quarters = 0
+        self._crop_frame = None
         self.reset_zoom()
         self.crop_rectangle = largest_crop(self._crop_image_size(), aspect)
         self.queue_draw()
@@ -380,16 +404,43 @@ class ImageView(Gtk.DrawingArea):
         self.crop_rectangle = largest_crop(self._crop_image_size(), aspect, centre)
         self.queue_draw()
 
+    def rotate_crop_counterclockwise(self):
+        if not self.cropping:
+            return False
+        old_width = self._crop_image_size()[0]
+        centre_x = self.crop_rectangle.x + self.crop_rectangle.width / 2
+        centre_y = self.crop_rectangle.y + self.crop_rectangle.height / 2
+        self.crop_rotation_quarters = (self.crop_rotation_quarters + 1) % 4
+        frame = self.data.frames[self.frame_index]
+        if self.crop_rotation_quarters:
+            self._crop_frame = CachedFrame(
+                rotate_counterclockwise(frame.image, self.crop_rotation_quarters),
+                tuple(
+                    rotate_counterclockwise(level, self.crop_rotation_quarters)
+                    for level in frame.mipmaps
+                ),
+            )
+        else:
+            self._crop_frame = None
+        self.crop_rectangle = largest_crop(
+            self._crop_image_size(),
+            self.crop_aspect,
+            (centre_y, old_width - centre_x),
+        )
+        self.reset_zoom()
+        return True
+
     def cancel_crop(self):
-        self.crop_rectangle = self._crop_drag = None
-        self.queue_draw()
+        self.crop_rectangle = self._crop_drag = self._crop_frame = None
+        self.crop_rotation_quarters = 0
+        self.reset_zoom()
 
     def _queue_render(self, *, refine=False):
         if self.data is None or self._closed:
             return
         self._serial += 1
         self._render_pending = (
-            self._generation, self._serial, self.data.frames[self.frame_index],
+            self._generation, self._serial, self._display_frame(),
             self._view_size, self._scale(), self.ox, self.oy, refine,
         )
         if self._render_future is None:
@@ -454,7 +505,7 @@ class ImageView(Gtk.DrawingArea):
             self._draw_crop(context)
 
     def _draw_crop(self, context):
-        decoded = self.data.frames[self.frame_index].image
+        decoded = self._display_frame().image
         scale = self._scale()
         image_x, image_y = self.ox, self.oy
         image_width, image_height = decoded.width * scale, decoded.height * scale

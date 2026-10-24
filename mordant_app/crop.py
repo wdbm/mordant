@@ -146,11 +146,24 @@ def suggested_crop_name(path: str | Path) -> str:
     return f"{path.stem}_cropped{path.suffix}"
 
 
+def rotate_counterclockwise(image: Image.Image, quarter_turns: int) -> Image.Image:
+    if not isinstance(quarter_turns, int):
+        raise TypeError("Crop rotation must be a whole number of quarter turns.")
+    transpose = (
+        None,
+        Image.Transpose.ROTATE_90,
+        Image.Transpose.ROTATE_180,
+        Image.Transpose.ROTATE_270,
+    )[quarter_turns % 4]
+    return image if transpose is None else image.transpose(transpose)
+
+
 def crop_image(
     source_path: str | Path,
     output_path: str | Path,
     rectangle: CropRectangle,
     aspect: AspectRatio,
+    rotation_quarters: int = 0,
 ) -> Path:
     source_path = Path(source_path)
     output_path = Path(output_path)
@@ -164,7 +177,10 @@ def crop_image(
             for key in ("icc_profile", "dpi")
             if key in source.info
         }
-        oriented = ImageOps.exif_transpose(source)
+        oriented = rotate_counterclockwise(
+            ImageOps.exif_transpose(source),
+            rotation_quarters,
+        )
         if (
             rectangle.x < 0
             or rectangle.y < 0
