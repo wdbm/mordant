@@ -15,10 +15,10 @@ from gi.repository import Gdk, Gtk
 
 
 class UndoDialogue(Gtk.Window):
-    """Display the affected paths before a transfer is undone."""
+    """Display the affected paths before a file operation is undone."""
 
     def __init__(self, parent: Gtk.Window, description: str, on_confirm: Callable[[], object]):
-        super().__init__(title="Undo transfer", transient_for=parent, modal=True)
+        super().__init__(title="Confirm undo", transient_for=parent, modal=True)
         self.set_destroy_with_parent(True)
         self.set_default_size(680, 420)
 
@@ -27,7 +27,8 @@ class UndoDialogue(Gtk.Window):
             getattr(content, f"set_margin_{edge}")(12)
         self.set_child(content)
 
-        heading = Gtk.Label(label="Undo the last transfer?", xalign=0)
+        question, _separator, changes = description.partition("\n\n")
+        heading = Gtk.Label(label=question or "Undo the latest operation?", xalign=0)
         content.append(heading)
         explanation = Gtk.Label(label="The following changes will be made:", xalign=0)
         content.append(explanation)
@@ -39,7 +40,7 @@ class UndoDialogue(Gtk.Window):
         details.set_editable(False)
         details.set_cursor_visible(False)
         details.set_wrap_mode(Gtk.WrapMode.CHAR)
-        details.get_buffer().set_text(description.partition("\n\n")[2] or description)
+        details.get_buffer().set_text(changes or description)
         scroller.set_child(details)
         content.append(scroller)
 
@@ -47,12 +48,12 @@ class UndoDialogue(Gtk.Window):
         actions.set_halign(Gtk.Align.END)
         content.append(actions)
         cancel = Gtk.Button(label="Cancel")
-        cancel.set_tooltip_text("Keep the last transfer")
+        cancel.set_tooltip_text("Keep the latest operation")
         cancel.connect("clicked", lambda *_args: self.close())
         actions.append(cancel)
         self._cancel_button = cancel
-        undo = Gtk.Button(label="Undo transfer")
-        undo.set_tooltip_text("Apply the listed changes and undo the last transfer")
+        undo = Gtk.Button(label="Undo")
+        undo.set_tooltip_text("Apply the listed changes and undo the latest operation")
         undo.connect("clicked", lambda *_args: on_confirm())
         actions.append(undo)
 

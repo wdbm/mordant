@@ -6,7 +6,7 @@ PNG, JPEG, GIF, WEBP, SVG, and diverse video formats are supported. When saving,
 
 Recent save directories can be ordered by their full paths, by their final directory names, or by most recent use. Destinations can be filtered live as search text is entered in a search field.
 
-Video playback is provided by the GTK media backend, with supported codecs determined by GStreamer plugins installed. Pillow renders raster images and WEBP, librsvg renders SVG, and `python3-gi-cairo` renders Cairo drawing.
+Video playback is provided by the GTK media backend, with supported codecs determined by GStreamer plugins installed. FFmpeg provides non-destructive video trimming. Pillow renders raster images and WEBP, librsvg renders SVG, and `python3-gi-cairo` renders Cairo drawing.
 
 ![](Mordant_1.png)
 
@@ -17,7 +17,8 @@ sudo apt install python3-venv python3-setuptools python3-wheel python3-docopt \
     python3-pil python3-cairo python3-gi python3-gi-cairo \
     gir1.2-gtk-4.0 gir1.2-rsvg-2.0 libgtk-4-media-gstreamer \
     gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-    gstreamer1.0-plugins-bad gstreamer1.0-libav desktop-file-utils
+    gstreamer1.0-plugins-bad gstreamer1.0-libav desktop-file-utils \
+    ffmpeg libimage-exiftool-perl
 ```
 
 The programme can be run from a cloned copy of the repository or installed.
@@ -64,11 +65,12 @@ All installed files are then kept beneath that prefix. The desktop files and vir
 |Left-click and drag                 |Pan a zoomed image                                            |
 |`Space`                             |Open the save dialogue for an image, or play or pause a video |
 |`P`                                 |Play or pause a video or animated image                       |
+|`Ctrl+C`                            |Copy the current media file to the clipboard                  |
 |`S`                                 |Open the save dialogue for the original media file            |
 |`Shift+S`                           |Save the current video frame as a PNG screenshot              |
 |`Ctrl+S`                            |Quick-save to the selected or most recent save directory      |
 |`1`-`9`, `0`                        |Quick-save to the corresponding indexed recent directory      |
-|`Ctrl+Z`                            |Confirm undo of the latest save or move operation             |
+|`Ctrl+Z`                            |Confirm undo of the latest file operation                     |
 |`Delete`                            |Move the current original file to the system Trash            |
 |`Ctrl+O`                            |Open one or more media files                                  |
 |`Ctrl+Shift+O`                      |Open a media directory                                        |
@@ -80,6 +82,12 @@ All installed files are then kept beneath that prefix. The desktop files and vir
 |`H`                                 |Show or hide the path and status bar                          |
 |`F1` / `?`                          |Show the keyboard shortcuts window                            |
 |`Escape`                            |Leave fullscreen mode, or close                               |
+
+The `Image information...` option in the main menu displays file properties and searchable EXIF, IPTC and XMP metadata. For JPEG, PNG and WEBP images, selected fields can be edited and location, private or removable metadata can be deleted after confirmation. Metadata changes preserve the encoded image data, are validated before replacing the original file and can be reversed using a one-step Undo operation. ExifTool is required for full metadata display and modification.
+
+The `Trim video...` option in the main menu selects a video interval using editable times or the current playback position. The selection can be previewed before it is saved through the standard multi-directory save dialogue. Fast copy preserves the original encoded streams and container but may begin at a nearby keyframe; accurate re-encoding produces an MP4 with precise boundaries. Audio can be included or removed in either mode. FFmpeg is required for this feature.
+
+The `Copy file` option in the main menu, or `Ctrl+C`, places the currently displayed original media file on the desktop clipboard. It can then be pasted into applications which accept file attachments. When an editable text field has focus, `Ctrl+C` retains its normal text-copy behaviour.
 
 ### Open common files
 

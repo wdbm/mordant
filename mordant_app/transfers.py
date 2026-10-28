@@ -8,6 +8,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import filecmp
 import hashlib
 from pathlib import Path
 import os
@@ -120,10 +121,16 @@ class _UndoEntry:
 
 
 class _UndoRecord:
-    def __init__(self):
+    def __init__(
+        self,
+        prompt: str = "Undo the last transfer?",
+        success_message: str = "Last transfer undone.",
+    ):
         self.storage = tempfile.TemporaryDirectory(prefix="mordant-undo-")
         self.entries: list[_UndoEntry] = []
         self.moved_source = None
+        self.prompt = prompt
+        self.success_message = success_message
 
     def remember(self, path: Path) -> None:
         before = _fingerprint(path)
@@ -150,6 +157,7 @@ class TransferManager:
     def __init__(self, recent_store: RecentDirectoryStore | None = None):
         self.recent_store = recent_store
         self._last_transfer: _UndoRecord | None = None
+        self.last_undo_message = ""
 
     def close(self) -> None:
         if self._last_transfer is not None:
@@ -159,7 +167,7 @@ class TransferManager:
     def undo_description(self) -> str:
         if self._last_transfer is None:
             return ""
-        return "Undo the last transfer?\n\n" + "\n".join(
+        return self._last_transfer.prompt + "\n\n" + "\n".join(
             f"{'Restore' if entry.backup_path else 'Remove'}: {entry.path}"
             for entry in reversed(self._last_transfer.entries)
         )
@@ -171,10 +179,53 @@ class TransferManager:
             if _fingerprint(entry.path) != entry.expected_fingerprint:
                 raise OSError(f"File changed since the transfer; undo cancelled: {entry.path}")
         moved_source = self._last_transfer.moved_source
+        self.last_undo_message = self._last_transfer.success_message
         self._last_transfer.restore()
         self._last_transfer.storage.cleanup()
         self._last_transfer = None
         return moved_source
+
+    def modify_file(self, path: str | Path, modifier) -> bool:
+        """Apply a validated change to a copy, then atomically replace the file."""
+
+        path = Path(path).resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"File is unavailable: {path}")
+        record = _UndoRecord(
+            prompt="Undo the last metadata change?",
+            success_message="Last metadata change undone.",
+        )
+        record.remember(path)
+        original_fingerprint = record.entries[0].expected_fingerprint
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".mordant-metadata-",
+            suffix=path.suffix,
+            dir=path.parent,
+        )
+        os.close(descriptor)
+        temporary_path = Path(temporary_name)
+        replaced = False
+        try:
+            shutil.copy2(path, temporary_path)
+            modifier(temporary_path)
+            if _fingerprint(path) != original_fingerprint:
+                raise OSError(f"File changed while metadata was being prepared: {path}")
+            if filecmp.cmp(path, temporary_path, shallow=False):
+                record.storage.cleanup()
+                return False
+            os.replace(temporary_path, path)
+            replaced = True
+            record.entries[0].expected_fingerprint = _fingerprint(path)
+        except Exception:
+            if replaced:
+                record.restore()
+            record.storage.cleanup()
+            raise
+        finally:
+            temporary_path.unlink(missing_ok=True)
+        self.close()
+        self._last_transfer = record
+        return True
 
     def transfer(self, request: TransferRequest) -> TransferResult:
         source = Path(request.source_path).resolve()

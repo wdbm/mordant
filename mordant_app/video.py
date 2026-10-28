@@ -24,6 +24,7 @@ from .subtitles import (
     read_subtitle_entries,
     subtitle_text_at,
 )
+from .video_trim import TrimSettings, format_video_time, parse_video_time
 
 UPDATE_INTERVAL_MS = 100
 
@@ -66,13 +67,22 @@ class VideoView(Gtk.Box):
     seconds; position_us and duration_us retain GTK's native microsecond units.
     """
 
-    def __init__(self, on_error=None, on_change=None, on_ended=None):
+    def __init__(
+        self,
+        on_error=None,
+        on_change=None,
+        on_ended=None,
+        on_trim_save=None,
+        on_trim_cancel=None,
+    ):
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.set_hexpand(True)
         self.set_vexpand(True)
         self.on_error = on_error
         self.on_change = on_change
         self.on_ended = on_ended
+        self.on_trim_save = on_trim_save
+        self.on_trim_cancel = on_trim_cancel
         self.current_path = None
         self.media_stream = None
         self._signal_ids = []
@@ -83,6 +93,9 @@ class VideoView(Gtk.Box):
         self.position_us = 0
         self.duration_us = 0
         self._updating_progress = False
+        self._trimming = False
+        self._trim_processing = False
+        self._trim_previewing = False
         self.subtitles_enabled = False
         self.subtitle_tracks = []
         self.subtitle_track_index = -1
@@ -137,6 +150,7 @@ class VideoView(Gtk.Box):
         self.volume_button.set_value(self.volume)
         self.volume_button.connect("value-changed", self._on_volume_changed)
         transport.append(self.volume_button)
+        self._build_trim_controls()
 
         self.connect("realize", self._on_realize)
         self.connect("unrealize", self._on_unrealize)
@@ -151,6 +165,76 @@ class VideoView(Gtk.Box):
         """)
         self._css_provider = provider
         Gtk.StyleContext.add_provider_for_display(self.get_display(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def _build_trim_controls(self):
+        self.trim_range = Gtk.DrawingArea(height_request=8, hexpand=True)
+        self.trim_range.set_draw_func(self._draw_trim_range)
+        self.trim_range.set_tooltip_text("Selected portion of the video")
+        self.controls.insert_child_after(self.trim_range, self.progress_scale)
+        self.trim_range.set_visible(False)
+        self.trim_controls = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=6,
+            margin_top=4,
+        )
+        self.controls.append(self.trim_controls)
+        times = Gtk.Box(spacing=6)
+        self.trim_controls.append(times)
+        times.append(Gtk.Label(label="Start:"))
+        self.trim_start_entry = Gtk.Entry(width_chars=12)
+        self.trim_start_entry.set_tooltip_text("Trim start as seconds, MM:SS, or HH:MM:SS")
+        self.trim_start_entry.connect("changed", self._trim_time_changed)
+        times.append(self.trim_start_entry)
+        self.trim_set_start_button = Gtk.Button(label="Set start", tooltip_text="Use the current playback position as the trim start")
+        self.trim_set_start_button.connect("clicked", lambda _button: self._set_trim_boundary(True))
+        times.append(self.trim_set_start_button)
+        times.append(Gtk.Label(label="End:"))
+        self.trim_end_entry = Gtk.Entry(width_chars=12)
+        self.trim_end_entry.set_tooltip_text("Trim end as seconds, MM:SS, or HH:MM:SS")
+        self.trim_end_entry.connect("changed", self._trim_time_changed)
+        times.append(self.trim_end_entry)
+        self.trim_set_end_button = Gtk.Button(label="Set end", tooltip_text="Use the current playback position as the trim end")
+        self.trim_set_end_button.connect("clicked", lambda _button: self._set_trim_boundary(False))
+        times.append(self.trim_set_end_button)
+
+        actions = Gtk.FlowBox()
+        actions.set_selection_mode(Gtk.SelectionMode.NONE)
+        actions.set_column_spacing(6)
+        actions.set_row_spacing(6)
+        actions.set_min_children_per_line(1)
+        actions.set_max_children_per_line(8)
+        self.trim_controls.append(actions)
+        self.trim_preview_button = Gtk.Button(label="Play selection", tooltip_text="Play the selected portion of the video")
+        self.trim_preview_button.connect("clicked", self._preview_trim)
+        actions.append(self.trim_preview_button)
+        self.trim_mode_dropdown = Gtk.DropDown.new_from_strings(("Fast copy", "Accurate re-encode"))
+        self.trim_mode_dropdown.set_tooltip_text("Copy streams quickly or re-encode for precise boundaries")
+        actions.append(self.trim_mode_dropdown)
+        self.trim_audio_button = Gtk.CheckButton(label="Include audio", active=True)
+        self.trim_audio_button.set_tooltip_text("Retain the first audio stream in the trimmed video")
+        actions.append(self.trim_audio_button)
+        self.trim_reset_button = Gtk.Button(label="Reset", tooltip_text="Select the complete video")
+        self.trim_reset_button.connect("clicked", lambda _button: self._reset_trim_range())
+        actions.append(self.trim_reset_button)
+        self.trim_cancel_button = Gtk.Button(label="Cancel", tooltip_text="Cancel video trimming")
+        self.trim_cancel_button.connect("clicked", self._request_trim_cancel)
+        actions.append(self.trim_cancel_button)
+        self.trim_save_button = Gtk.Button(label="Save trim...", tooltip_text="Prepare the selected video portion and choose save directories")
+        self.trim_save_button.add_css_class("suggested-action")
+        self.trim_save_button.connect("clicked", self._save_trim)
+        actions.append(self.trim_save_button)
+        self._trim_input_widgets = (
+            self.trim_start_entry,
+            self.trim_set_start_button,
+            self.trim_end_entry,
+            self.trim_set_end_button,
+            self.trim_preview_button,
+            self.trim_mode_dropdown,
+            self.trim_audio_button,
+            self.trim_reset_button,
+            self.trim_save_button,
+        )
+        self.trim_controls.set_visible(False)
 
     def _set_volume_button_tooltips(self) -> None:
         tooltips = {
@@ -179,6 +263,22 @@ class VideoView(Gtk.Box):
     @property
     def repeat(self) -> bool:
         return self._repeat
+
+    @property
+    def trimming(self) -> bool:
+        return self._trimming
+
+    @property
+    def can_trim(self) -> bool:
+        stream = self.media_stream
+        return bool(
+            self.current_path is not None
+            and stream is not None
+            and stream.is_prepared()
+            and stream.is_seekable()
+            and stream.has_video()
+            and stream.get_duration() > 0
+        )
 
     @repeat.setter
     def repeat(self, value: bool):
@@ -220,6 +320,7 @@ class VideoView(Gtk.Box):
             self._on_prepared(stream, None)
 
     def clear(self):
+        self._leave_trim_mode()
         if self._tick_id:
             GLib.source_remove(self._tick_id)
             self._tick_id = 0
@@ -255,6 +356,176 @@ class VideoView(Gtk.Box):
         self.time_label.set_label("00:00 / 00:00")
         self.play_button.set_sensitive(False)
         self._changed()
+
+    def begin_trim(self) -> bool:
+        if not self.can_trim:
+            return False
+        self.pause()
+        self._update_position()
+        self._trimming = True
+        self._trim_processing = False
+        self._trim_previewing = False
+        self.trim_range.set_visible(True)
+        self.trim_controls.set_visible(True)
+        self._reset_trim_range()
+        self._changed()
+        return True
+
+    def cancel_trim(self) -> None:
+        if not self._trimming:
+            return
+        self.pause()
+        self._leave_trim_mode()
+        self._changed()
+
+    def set_trim_processing(self, processing: bool) -> None:
+        self._trim_processing = bool(processing)
+        for widget in self._trim_input_widgets:
+            widget.set_sensitive(not processing)
+        self.trim_cancel_button.set_label("Cancel processing" if processing else "Cancel")
+        self.trim_cancel_button.set_tooltip_text(
+            "Stop FFmpeg and discard its incomplete output"
+            if processing
+            else "Cancel video trimming"
+        )
+
+    def current_trim_settings(self) -> TrimSettings:
+        start_us = parse_video_time(self.trim_start_entry.get_text())
+        end_us = parse_video_time(self.trim_end_entry.get_text())
+        settings = TrimSettings(
+            start_us,
+            end_us,
+            reencode=self.trim_mode_dropdown.get_selected() == 1,
+            include_audio=self.trim_audio_button.get_active(),
+        )
+        settings.validate(self.duration_us)
+        return settings
+
+    def request_trim_save(self) -> None:
+        self._save_trim(None)
+
+    def _leave_trim_mode(self) -> None:
+        self._trimming = False
+        self._trim_processing = False
+        self._trim_previewing = False
+        if hasattr(self, "trim_controls"):
+            self.trim_controls.set_visible(False)
+            self.set_trim_processing(False)
+        if hasattr(self, "trim_range"):
+            self.trim_range.set_visible(False)
+        if hasattr(self, "progress_scale"):
+            self.progress_scale.clear_marks()
+
+    def _set_trim_entries(self, start_us: int, end_us: int) -> None:
+        self.trim_start_entry.handler_block_by_func(self._trim_time_changed)
+        self.trim_end_entry.handler_block_by_func(self._trim_time_changed)
+        try:
+            self.trim_start_entry.set_text(format_video_time(start_us))
+            self.trim_end_entry.set_text(format_video_time(end_us))
+        finally:
+            self.trim_start_entry.handler_unblock_by_func(self._trim_time_changed)
+            self.trim_end_entry.handler_unblock_by_func(self._trim_time_changed)
+        self._refresh_trim_range()
+
+    def _reset_trim_range(self) -> None:
+        if self.duration_us > 0:
+            self._set_trim_entries(0, self.duration_us)
+
+    def _set_trim_boundary(self, start: bool) -> None:
+        try:
+            settings = self.current_trim_settings()
+        except ValueError:
+            start_us, end_us = 0, self.duration_us
+        else:
+            start_us, end_us = settings.start_us, settings.end_us
+        position_us = min(max(0, self.position_us), self.duration_us)
+        minimum_gap_us = 1000
+        if start:
+            start_us = min(position_us, end_us - minimum_gap_us)
+        else:
+            end_us = max(position_us, start_us + minimum_gap_us)
+        self._set_trim_entries(start_us, end_us)
+
+    def _trim_time_changed(self, _entry) -> None:
+        self._refresh_trim_range()
+
+    def _refresh_trim_range(self) -> None:
+        valid = True
+        try:
+            settings = self.current_trim_settings()
+        except ValueError:
+            valid = False
+            settings = None
+        for entry in (self.trim_start_entry, self.trim_end_entry):
+            if valid:
+                entry.remove_css_class("error")
+            else:
+                entry.add_css_class("error")
+        self.trim_save_button.set_sensitive(valid and not self._trim_processing)
+        self.trim_preview_button.set_sensitive(valid and not self._trim_processing)
+        self.progress_scale.clear_marks()
+        self.trim_range.queue_draw()
+        if settings is not None:
+            self.progress_scale.add_mark(
+                settings.start_us / 1_000_000,
+                Gtk.PositionType.TOP,
+                "Start",
+            )
+            self.progress_scale.add_mark(
+                settings.end_us / 1_000_000,
+                Gtk.PositionType.TOP,
+                "End",
+            )
+
+    def _draw_trim_range(self, _area, context, width, height) -> None:
+        context.set_source_rgba(0.45, 0.45, 0.45, 0.45)
+        context.rectangle(0, 0, width, height)
+        context.fill()
+        try:
+            settings = self.current_trim_settings()
+        except ValueError:
+            return
+        if self.duration_us <= 0:
+            return
+        start_x = width * settings.start_us / self.duration_us
+        end_x = width * settings.end_us / self.duration_us
+        context.set_source_rgba(0.20, 0.55, 0.95, 0.95)
+        context.rectangle(start_x, 0, max(1, end_x - start_x), height)
+        context.fill()
+
+    def _preview_trim(self, _button) -> None:
+        if self._trim_previewing:
+            self.pause()
+            self._trim_previewing = False
+            self.trim_preview_button.set_label("Play selection")
+            return
+        try:
+            settings = self.current_trim_settings()
+        except ValueError as error:
+            self._error(str(error))
+            return
+        self.media_stream.seek(settings.start_us)
+        self._trim_previewing = True
+        self.trim_preview_button.set_label("Stop preview")
+        self.play()
+
+    def _request_trim_cancel(self, _button) -> None:
+        if self.on_trim_cancel is not None:
+            self.on_trim_cancel()
+        elif not self._trim_processing:
+            self.cancel_trim()
+
+    def _save_trim(self, _button) -> None:
+        try:
+            settings = self.current_trim_settings()
+        except ValueError as error:
+            self._error(str(error))
+            return
+        self.pause()
+        self._trim_previewing = False
+        self.trim_preview_button.set_label("Play selection")
+        if self.on_trim_save is not None:
+            self.on_trim_save(settings)
 
     def close(self):
         self.clear()
@@ -386,6 +657,17 @@ class VideoView(Gtk.Box):
     def _on_ended(self, stream, _param):
         if stream is not self.media_stream or not stream.get_ended():
             return
+        if self._trim_previewing:
+            try:
+                trim_end_us = self.current_trim_settings().end_us
+            except ValueError:
+                trim_end_us = self.duration_us
+            self._trim_previewing = False
+            self.trim_preview_button.set_label("Play selection")
+            stream.pause()
+            stream.seek(trim_end_us)
+            self._changed()
+            return
         if self.repeat:
             stream.seek(0)
             stream.play()
@@ -401,6 +683,18 @@ class VideoView(Gtk.Box):
             return GLib.SOURCE_REMOVE
         self.position_us = max(0, stream.get_timestamp())
         self.duration_us = max(0, stream.get_duration())
+        if self._trim_previewing:
+            try:
+                trim_end_us = self.current_trim_settings().end_us
+            except ValueError:
+                self._trim_previewing = False
+                self.trim_preview_button.set_label("Play selection")
+            else:
+                if self.position_us >= trim_end_us:
+                    stream.pause()
+                    stream.seek(trim_end_us)
+                    self._trim_previewing = False
+                    self.trim_preview_button.set_label("Play selection")
         self._updating_progress = True
         try:
             self.progress_scale.set_range(0.0, max(1.0, self.duration_us / 1_000_000))

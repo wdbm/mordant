@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys
 import tempfile
+from threading import Event
 
 import gi
 gi.require_version("Gtk", "4.0")
@@ -19,7 +20,10 @@ from .common_directories_dialogue import CommonDirectoriesDialogue
 from .configuration import Configuration
 from .configuration_dialogue import ConfigurationDialogue
 from .crop import crop_image, suggested_crop_name
+from .image_information import ImageInformationWindow
 from .images import ImageView
+from .media_clipboard import copy_file_to_clipboard
+from .metadata import apply_metadata_edit, remove_metadata
 from .media import (
     FILTERS, IMAGE_SUFFIXES, VIDEO_SUFFIXES, MediaLibrary,
     image_prefetch_candidates, media_kind,
@@ -27,6 +31,13 @@ from .media import (
 from .save_dialogue import SaveDialogue
 from .transfers import format_transfer_status
 from .video import VideoView
+from .video_trim import (
+    TrimCancelled,
+    TrimSettings,
+    ffmpeg_path,
+    suggested_trim_name,
+    trim_video,
+)
 
 APP_ID = "io.github.wdbm.mordant"
 CROP_ASPECT_PRESETS = (
@@ -47,11 +58,12 @@ Ctrl+Alt+O                      Open media filenames common to multiple director
 F5                              Refresh the current media source
 
 Save and organise
+Ctrl+C                          Copy the current media file to the clipboard
 S                               Open the save dialogue for the original media file
 Shift+S                         Save the current video frame as a PNG screenshot
 Ctrl+S                          Quick-save to the selected or most recent save directory
 1-9, 0                          Quick-save to the corresponding indexed recent directory
-Ctrl+Z                          Confirm undo of the latest save or move operation
+Ctrl+Z                          Confirm undo of the latest file operation
 Delete                          Move the current original file to the system Trash
 
 View
@@ -73,6 +85,14 @@ Drag a crop corner              Resize the selection while preserving its aspect
 Rotate button                   Rotate the image counterclockwise by 90 degrees
 Enter                           Prepare the crop and open the save dialogue
 Escape                          Cancel cropping
+
+Trim mode
+Set start / Set end             Use the current playback position as a boundary
+Left / Right                    Seek backward or forward by 5 seconds
+Shift+Left / Shift+Right        Seek backward or forward by 3 seconds
+Ctrl+Left / Ctrl+Right          Seek backward or forward by 1 minute
+Enter                           Prepare the trim and open the save dialogue
+Escape                          Cancel trimming or active FFmpeg processing
 
 Save dialogue
 Enter                           Save to all selected directories, except while typing in search
@@ -111,10 +131,16 @@ class MordantWindow(Gtk.ApplicationWindow):
         self._chooser = None
         self._common_directories_window = None
         self._configuration_window = None
+        self._image_information_window = None
+        self._clipboard_provider = None
         self.crop_aspect = (3, 2)
         self._crop_temporary_directory = None
         self._crop_transfer_active = False
         self._crop_replaces_current = False
+        self._trim_temporary_directory = None
+        self._trim_cancel_event = None
+        self._trim_transfer_active = False
+        self._trim_replaces_current = False
         self.last_error = None
         self._display_path = None
         self.status_messages = app.status_messages
@@ -157,7 +183,7 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.save_button = self._button("Save...", self.open_save_dialogue, "Save the original file (S)")
         self.save_button.add_css_class("suggested-action")
         self.header.pack_end(self.save_button)
-        self.undo_button = self._button("Undo", self.request_undo, "Undo the latest transfer (Ctrl+Z)")
+        self.undo_button = self._button("Undo", self.request_undo, "Undo the latest file operation (Ctrl+Z)")
         self.header.pack_end(self.undo_button)
 
     def _build_open_menu(self):
@@ -219,6 +245,15 @@ class MordantWindow(Gtk.ApplicationWindow):
             margin_start=6,
             margin_end=6,
         )
+        self.copy_menu_button = self._button(
+            "Copy file",
+            self.copy_current_file,
+            "Copy the current media file (Ctrl+C)",
+        )
+        self.copy_menu_button.add_css_class("flat")
+        self.copy_menu_button.set_halign(Gtk.Align.FILL)
+        self.copy_menu_button.get_child().set_halign(Gtk.Align.START)
+        menu.append(self.copy_menu_button)
         self.crop_menu_button = self._button(
             "Crop and rotate",
             self.start_crop,
@@ -228,8 +263,44 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.crop_menu_button.set_halign(Gtk.Align.FILL)
         self.crop_menu_button.get_child().set_halign(Gtk.Align.START)
         menu.append(self.crop_menu_button)
+        self.trim_menu_button = self._button(
+            "Trim video...",
+            self.start_trim,
+            "Select and save a portion of the current video",
+        )
+        self.trim_menu_button.add_css_class("flat")
+        self.trim_menu_button.set_halign(Gtk.Align.FILL)
+        self.trim_menu_button.get_child().set_halign(Gtk.Align.START)
+        menu.append(self.trim_menu_button)
+        self.information_menu_button = self._button(
+            "Image information...",
+            self.open_image_information,
+            "View and manage metadata for the current image",
+        )
+        self.information_menu_button.add_css_class("flat")
+        self.information_menu_button.set_halign(Gtk.Align.FILL)
+        self.information_menu_button.get_child().set_halign(Gtk.Align.START)
+        menu.append(self.information_menu_button)
         self.actions_menu_popover.set_child(menu)
         self.actions_menu_button.set_popover(self.actions_menu_popover)
+
+    def copy_current_file(self):
+        self.actions_menu_popover.popdown()
+        path = self.library.current
+        if path is None:
+            self.show_error("No current media file is available to copy.")
+            return False
+        try:
+            copied_path, provider = copy_file_to_clipboard(
+                path,
+                self.get_display().get_clipboard(),
+            )
+        except (OSError, RuntimeError) as error:
+            self.show_error(f"Could not copy the media file: {error}")
+            return False
+        self._clipboard_provider = provider
+        self.show_message(f"Copied {copied_path.name} to the clipboard.")
+        return True
 
     def _build_media_area(self):
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -243,8 +314,13 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.empty.add_css_class("dim-label")
         self.stack.add_named(self.empty, "empty")
         self.images = ImageView(on_error=self.show_error, on_change=self._media_changed)
-        self.video = VideoView(on_error=self.show_error, on_change=self._media_changed,
-                               on_ended=self._video_ended)
+        self.video = VideoView(
+            on_error=self.show_error,
+            on_change=self._media_changed,
+            on_ended=self._video_ended,
+            on_trim_save=self.save_trim,
+            on_trim_cancel=self.cancel_trim,
+        )
         self.stack.add_named(self.images, "image")
         self.stack.add_named(self.video, "video")
 
@@ -358,7 +434,9 @@ class MordantWindow(Gtk.ApplicationWindow):
         click.connect(
             "pressed",
             lambda gesture, count, x, y: (
-                self.toggle_fullscreen() if count == 2 and not self.images.cropping else None
+                self.toggle_fullscreen()
+                if count == 2 and not self.images.cropping and not self.video.trimming
+                else None
             ),
         )
         self.stack.add_controller(click)
@@ -520,8 +598,231 @@ class MordantWindow(Gtk.ApplicationWindow):
         if temporary_directory is not None:
             temporary_directory.cleanup()
 
+    def start_trim(self):
+        self.actions_menu_popover.popdown()
+        if self.busy or self._dialogue is not None or not self.video.can_trim:
+            return
+        if ffmpeg_path() is None:
+            self.show_error("FFmpeg is required to trim videos but could not be found.")
+            return
+        if self.video.begin_trim():
+            self._update_ui()
+
+    def cancel_trim(self):
+        if self._trim_cancel_event is not None:
+            self._trim_cancel_event.set()
+            self.video.trim_cancel_button.set_sensitive(False)
+            self.show_message("Cancelling video trimming...", persistent=True)
+            return
+        self.video.cancel_trim()
+        self._update_ui()
+
+    def save_trim(self, settings: TrimSettings):
+        source = self.library.current
+        if (
+            self.busy
+            or not self.video.trimming
+            or source is None
+            or media_kind(source) != "video"
+        ):
+            return
+        try:
+            settings.validate(self.video.duration_us)
+        except ValueError as error:
+            self.show_error(str(error))
+            return
+        self._cleanup_trim_temporary_directory()
+        temporary_directory = tempfile.TemporaryDirectory(prefix="mordant-trim-")
+        self._trim_temporary_directory = temporary_directory
+        suggested_name = suggested_trim_name(source, settings.reencode)
+        output = Path(temporary_directory.name) / suggested_name
+        cancel_event = Event()
+        self._trim_cancel_event = cancel_event
+        self.busy = True
+        self.video.set_trim_processing(True)
+        self.show_message(f"Preparing {suggested_name}: 0%", persistent=True)
+        self._update_ui()
+
+        def progress(value):
+            GLib.idle_add(
+                self._trim_progress,
+                cancel_event,
+                suggested_name,
+                value,
+            )
+
+        future = self.executor.submit(
+            trim_video,
+            source,
+            output,
+            settings,
+            cancel_event,
+            progress,
+        )
+
+        def completed(finished):
+            GLib.idle_add(
+                self._trim_rendered,
+                source,
+                suggested_name,
+                cancel_event,
+                finished,
+            )
+
+        future.add_done_callback(completed)
+
+    def _trim_progress(self, cancel_event, suggested_name, value):
+        if self._trim_cancel_event is cancel_event and not cancel_event.is_set():
+            percentage = min(100, max(0, round(value * 100)))
+            self.show_message(
+                f"Preparing {suggested_name}: {percentage}%",
+                persistent=True,
+            )
+        return GLib.SOURCE_REMOVE
+
+    def _trim_rendered(self, source, suggested_name, cancel_event, future):
+        self.busy = False
+        if self._trim_cancel_event is cancel_event:
+            self._trim_cancel_event = None
+        self.video.set_trim_processing(False)
+        self.video.trim_cancel_button.set_sensitive(True)
+        if self.closed:
+            self._cleanup_trim_temporary_directory()
+            return GLib.SOURCE_REMOVE
+        try:
+            output = future.result()
+        except TrimCancelled:
+            self._cleanup_trim_temporary_directory()
+            self.show_message("Video trimming cancelled.")
+            self._update_ui()
+            return GLib.SOURCE_REMOVE
+        except Exception as error:
+            self._cleanup_trim_temporary_directory()
+            self.show_error(f"Video trim failed: {error}")
+            self._update_ui()
+            return GLib.SOURCE_REMOVE
+        if cancel_event.is_set():
+            self._cleanup_trim_temporary_directory()
+            self.show_message("Video trimming cancelled.")
+            self._update_ui()
+            return GLib.SOURCE_REMOVE
+        self.video.cancel_trim()
+        self._update_ui()
+        self._open_save_dialogue(
+            output,
+            on_save=self.perform_trim_transfer,
+            suggested_filename=suggested_name,
+            allow_move=False,
+            browse_initial_directory=source.parent,
+        )
+        return GLib.SOURCE_REMOVE
+
+    def perform_trim_transfer(self, request):
+        current = self.library.current.resolve() if self.library.current is not None else None
+        self._trim_replaces_current = bool(
+            request.overwrite_requested
+            and current is not None
+            and any(
+                (Path(directory) / request.name).resolve() == current
+                for directory in request.destination_directories
+            )
+        )
+        self._trim_transfer_active = True
+        try:
+            self.perform_transfer(request)
+        except Exception:
+            self._trim_transfer_active = False
+            self._trim_replaces_current = False
+            raise
+
+    def _cleanup_trim_temporary_directory(self):
+        temporary_directory = self._trim_temporary_directory
+        self._trim_temporary_directory = None
+        if temporary_directory is not None:
+            temporary_directory.cleanup()
+
+    def open_image_information(self):
+        self.actions_menu_popover.popdown()
+        path = self.library.current
+        if (
+            self.busy
+            or path is None
+            or media_kind(path) != "image"
+            or not path.is_file()
+        ):
+            return None
+        if self._image_information_window is not None:
+            if self._image_information_window.path == path.resolve():
+                self._image_information_window.present()
+                return self._image_information_window
+            self._image_information_window.destroy()
+        dialogue = ImageInformationWindow(
+            self,
+            path,
+            lambda action, values: self.perform_metadata_action(
+                dialogue,
+                action,
+                values,
+            ),
+        )
+        self._image_information_window = dialogue
+        dialogue.connect("close-request", self._image_information_closed)
+        dialogue.connect("unrealize", self._image_information_closed)
+        dialogue.present()
+        return dialogue
+
+    def _image_information_closed(self, dialogue, *_args):
+        if self._image_information_window is dialogue:
+            self._image_information_window = None
+        return False
+
+    def perform_metadata_action(self, dialogue, action, values=None):
+        if self.busy or dialogue is not self._image_information_window:
+            return
+        path = dialogue.path
+        self.busy = True
+        dialogue.set_busy(True, "Applying metadata change...")
+        self._update_ui()
+
+        def modify(temporary_path):
+            if action == "edit":
+                apply_metadata_edit(temporary_path, values or {})
+            else:
+                remove_metadata(temporary_path, action)
+
+        future = self.executor.submit(self.manager.modify_file, path, modify)
+        future.add_done_callback(
+            lambda completed: GLib.idle_add(
+                self._metadata_action_finished,
+                dialogue,
+                path,
+                completed,
+            )
+        )
+
+    def _metadata_action_finished(self, dialogue, path, future):
+        self.busy = False
+        try:
+            changed = future.result()
+        except Exception as error:
+            message = f"Metadata change failed: {error}"
+            if dialogue is self._image_information_window:
+                dialogue.show_error(message)
+            self.show_error(message)
+        else:
+            if self.library.current is not None and self.library.current.resolve() == path:
+                self.show_current()
+            if dialogue is self._image_information_window:
+                dialogue.refresh()
+            if changed:
+                self.show_message(f"Metadata updated for {path.name}.")
+            else:
+                self.show_message(f"No metadata changes were needed for {path.name}.")
+        self._update_ui()
+        return GLib.SOURCE_REMOVE
+
     def open_paths(self, paths):
-        if self.busy:
+        if self.busy or self.images.cropping or self.video.trimming:
             self.show_message("Wait for the current transfer to finish.")
             return
         try:
@@ -544,6 +845,11 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.images.clear()
         self.video.clear()
         path = self.library.current
+        if (
+            self._image_information_window is not None
+            and (path is None or self._image_information_window.path != path.resolve())
+        ):
+            self._image_information_window.destroy()
         if path is None:
             if self.library.intersection_source is not None and not self.library.paths:
                 count = len(self.library.intersection_source.directories)
@@ -566,7 +872,12 @@ class MordantWindow(Gtk.ApplicationWindow):
         self._media_changed()
 
     def navigate(self, delta):
-        if self.busy or self._dialogue is not None or self.images.cropping:
+        if (
+            self.busy
+            or self._dialogue is not None
+            or self.images.cropping
+            or self.video.trimming
+        ):
             return
         self.library.step(delta)
         self.show_current()
@@ -577,7 +888,7 @@ class MordantWindow(Gtk.ApplicationWindow):
             self.navigate(1)
 
     def _filter_changed(self, *_):
-        if not self._ready or self.busy or self.images.cropping:
+        if not self._ready or self.busy or self.images.cropping or self.video.trimming:
             return
         self.library.set_filter(FILTERS[self.filter_widget.get_selected()])
         if self.library.current != self._display_path:
@@ -586,7 +897,7 @@ class MordantWindow(Gtk.ApplicationWindow):
             self._update_ui()
 
     def refresh(self):
-        if self.busy or self.images.cropping:
+        if self.busy or self.images.cropping or self.video.trimming:
             return
         try:
             self.library.refresh()
@@ -599,6 +910,7 @@ class MordantWindow(Gtk.ApplicationWindow):
             return
         path = self.library.current
         cropping = self.images.cropping
+        trimming = self.video.trimming
         visible = self.library.visible
         position = visible.index(path) + 1 if path in visible else 0
         self.position_label.set_text(f"{position} / {len(visible)}")
@@ -606,7 +918,7 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.set_title(f"{path.name} - mordant" if path else "mordant")
         self.path_label.set_text(str(path) if path else "")
         self.path_label.set_tooltip_text(str(path) if path else "")
-        normal_actions = not self.busy and not cropping
+        normal_actions = not self.busy and not cropping and not trimming
         self.save_button.set_sensitive(
             normal_actions and (path is not None or bool(self.manager.undo_description()))
         )
@@ -617,9 +929,27 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.filter_widget.set_sensitive(normal_actions)
         self.configuration_button.set_sensitive(normal_actions and self._dialogue is None)
         self.open_menu_button.set_sensitive(normal_actions)
-        self.actions_menu_button.set_sensitive(not self.busy and not cropping)
+        self.actions_menu_button.set_sensitive(
+            not self.busy and not cropping and not trimming
+        )
         self.crop_menu_button.set_sensitive(
             normal_actions and self._dialogue is None and self.images.can_crop
+        )
+        self.copy_menu_button.set_sensitive(
+            normal_actions
+            and self._dialogue is None
+            and bool(path and path.is_file())
+        )
+        self.trim_menu_button.set_sensitive(
+            normal_actions
+            and self._dialogue is None
+            and self.video.can_trim
+            and ffmpeg_path() is not None
+        )
+        self.information_menu_button.set_sensitive(
+            normal_actions
+            and self._dialogue is None
+            and bool(path and path.is_file() and media_kind(path) == "image")
         )
         self.image_controls.set_visible(
             bool(path and media_kind(path) == "image" and not cropping)
@@ -740,7 +1070,7 @@ class MordantWindow(Gtk.ApplicationWindow):
         return False
 
     def _open_common_selection(self, directories):
-        if self.busy:
+        if self.busy or self.images.cropping or self.video.trimming:
             return False
         try:
             self.library.open_intersection(directories)
@@ -805,7 +1135,7 @@ class MordantWindow(Gtk.ApplicationWindow):
         return True
 
     def _drop_files(self, target, value, x, y):
-        if self.busy:
+        if self.busy or self.images.cropping or self.video.trimming:
             return False
         paths = [file.get_path() for file in value.get_files() if file.get_path()]
         if paths:
@@ -853,6 +1183,8 @@ class MordantWindow(Gtk.ApplicationWindow):
             self._dialogue = None
             if self._crop_temporary_directory is not None and not self._crop_transfer_active:
                 self._cleanup_crop_temporary_directory()
+            if self._trim_temporary_directory is not None and not self._trim_transfer_active:
+                self._cleanup_trim_temporary_directory()
             self._update_ui()
         return False
 
@@ -868,10 +1200,17 @@ class MordantWindow(Gtk.ApplicationWindow):
             self.library.restore(restored)
             self.filter_widget.set_selected(FILTERS.index(self.library.filter))
         self.show_current()
-        self.show_message("Last transfer undone.")
+        if self._image_information_window is not None:
+            self._image_information_window.refresh()
+        self.show_message(self.manager.last_undo_message or "Latest operation undone.")
 
     def quick_save(self, key=None):
-        if self.busy or self.images.cropping or self.library.current is None:
+        if (
+            self.busy
+            or self.images.cropping
+            or self.video.trimming
+            or self.library.current is None
+        ):
             return
         if key is not None:
             destination = self.store.for_key(key, self.session.listing_mode)
@@ -909,8 +1248,12 @@ class MordantWindow(Gtk.ApplicationWindow):
         self.busy = False
         crop_transfer = self._crop_transfer_active
         crop_replaces_current = self._crop_replaces_current
+        trim_transfer = self._trim_transfer_active
+        trim_replaces_current = self._trim_replaces_current
         self._crop_transfer_active = False
         self._crop_replaces_current = False
+        self._trim_transfer_active = False
+        self._trim_replaces_current = False
         result = None
         try:
             result = future.result()
@@ -920,8 +1263,10 @@ class MordantWindow(Gtk.ApplicationWindow):
             self.show_error(f"Transfer failed: {error}")
         else:
             if (
-                crop_transfer
-                and crop_replaces_current
+                (
+                    (crop_transfer and crop_replaces_current)
+                    or (trim_transfer and trim_replaces_current)
+                )
                 and result.saved_directories
                 and self.library.current is not None
                 and any(
@@ -947,11 +1292,18 @@ class MordantWindow(Gtk.ApplicationWindow):
                 self._hide_toast()
         if crop_transfer:
             self._cleanup_crop_temporary_directory()
+        if trim_transfer:
+            self._cleanup_trim_temporary_directory()
         self._update_ui()
         return GLib.SOURCE_REMOVE
 
     def trash_current(self):
-        if self.busy or self.images.cropping or self.library.current is None:
+        if (
+            self.busy
+            or self.images.cropping
+            or self.video.trimming
+            or self.library.current is None
+        ):
             return
         path = self.library.current
         try:
@@ -1028,22 +1380,47 @@ class MordantWindow(Gtk.ApplicationWindow):
         close_button.grab_focus()
 
     def _key_pressed(self, controller, key, code, state):
+        text_input = is_text_input(self.get_focus())
+        ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        alt = bool(state & Gdk.ModifierType.ALT_MASK)
+        char = chr(Gdk.keyval_to_unicode(key)).lower() if Gdk.keyval_to_unicode(key) else ""
+        if ctrl and not alt and char == "c" and not text_input:
+            self.copy_current_file()
+            return True
         if self.images.cropping:
             if key == Gdk.KEY_Escape:
                 self.cancel_crop()
                 return True
-            if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and not is_text_input(self.get_focus()):
+            if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and not text_input:
                 self.save_crop()
                 return True
-            return False if is_text_input(self.get_focus()) else True
-        if is_text_input(self.get_focus()):
+            return False if text_input else True
+        if self.video.trimming:
+            if key == Gdk.KEY_Escape:
+                self.cancel_trim()
+                return True
+            if text_input:
+                return False
+            if self.busy:
+                return True
+            shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
+            if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+                self.video.request_trim_save()
+            elif key == Gdk.KEY_space or char == "p":
+                self.pause()
+            elif key in (Gdk.KEY_Left, Gdk.KEY_Right):
+                delta = -1 if key == Gdk.KEY_Left else 1
+                self.video.seek_relative(delta * (60 if ctrl else 3 if shift else 5))
+            elif key == Gdk.KEY_Tab:
+                return False
+            else:
+                return True
+            return True
+        if text_input:
             return False
         if self.busy:
             return True
-        ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
         shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
-        alt = bool(state & Gdk.ModifierType.ALT_MASK)
-        char = chr(Gdk.keyval_to_unicode(key)).lower() if Gdk.keyval_to_unicode(key) else ""
         path = self.library.current
         video = path is not None and media_kind(path) == "video"
         if key == Gdk.KEY_Escape:
@@ -1100,7 +1477,17 @@ class MordantWindow(Gtk.ApplicationWindow):
 
     def _close_requested(self, *_):
         if self.busy:
-            self.show_message("Finishing the current transfer. Close the window once it completes.", persistent=True)
+            if self._trim_cancel_event is not None:
+                self.cancel_trim()
+                self.show_message(
+                    "Cancelling video trimming. Close the window once cancellation completes.",
+                    persistent=True,
+                )
+            else:
+                self.show_message(
+                    "Finishing the current file operation. Close the window once it completes.",
+                    persistent=True,
+                )
             return True
         self.shutdown()
         return False
@@ -1109,11 +1496,15 @@ class MordantWindow(Gtk.ApplicationWindow):
         if self.closed:
             return
         self.closed = True
+        if self._trim_cancel_event is not None:
+            self._trim_cancel_event.set()
         self.images.close()
         self.video.close()
         self.configuration.close()
         self.executor.shutdown(wait=False)
         self._cleanup_crop_temporary_directory()
+        if self._trim_cancel_event is None:
+            self._cleanup_trim_temporary_directory()
         for job in (self._toast_job, self._cursor_job):
             if job:
                 GLib.source_remove(job)
@@ -1129,6 +1520,9 @@ class MordantWindow(Gtk.ApplicationWindow):
         if self._configuration_window is not None:
             self._configuration_window.destroy()
             self._configuration_window = None
+        if self._image_information_window is not None:
+            self._image_information_window.destroy()
+            self._image_information_window = None
 
 
 class MordantApplication(Gtk.Application):

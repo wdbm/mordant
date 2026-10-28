@@ -83,7 +83,7 @@ class SaveDialogue(Gtk.Window):
         self._render_recent_buttons()
         self._refresh_selection_ui()
         if not self._source_available():
-            self._set_message("No source file available. The last transfer can still be undone.")
+            self._set_message("No source file available. The latest file operation can still be undone.")
         self.present()
         self.filename_entry.grab_focus()
 
@@ -217,7 +217,7 @@ class SaveDialogue(Gtk.Window):
         actions = Gtk.Box(spacing=8)
         outer.append(actions)
         self.undo_button = Gtk.Button(label="Undo")
-        self.undo_button.set_tooltip_text("Review and undo the latest transfer")
+        self.undo_button.set_tooltip_text("Review and undo the latest operation")
         self.undo_button.connect("clicked", self.request_undo)
         actions.append(self.undo_button)
         spacer = Gtk.Box()
@@ -575,7 +575,7 @@ class SaveDialogue(Gtk.Window):
         except OSError as error:
             self._set_message(str(error))
         else:
-            self._set_message("Last transfer undone.")
+            self._set_message(self.manager.last_undo_message or "Latest operation undone.")
             self.on_undo(restored)
         self._render_recent_buttons()
         self._refresh_selection_ui()

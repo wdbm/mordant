@@ -8,6 +8,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from fractions import Fraction
 import math
 import os
@@ -143,7 +144,8 @@ def integer_crop_box(
 
 def suggested_crop_name(path: str | Path) -> str:
     path = Path(path)
-    return f"{path.stem}_cropped{path.suffix}"
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%MZ")
+    return f"{path.stem}_{timestamp}{path.suffix}"
 
 
 def rotate_counterclockwise(image: Image.Image, quarter_turns: int) -> Image.Image:
