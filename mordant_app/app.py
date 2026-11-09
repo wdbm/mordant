@@ -47,6 +47,8 @@ CROP_ASPECT_PRESETS = (
     ("1:1", (1, 1)),
     ("16:9", (16, 9)),
 )
+FREE_CROP_ASPECT_INDEX = len(CROP_ASPECT_PRESETS)
+CUSTOM_CROP_ASPECT_INDEX = FREE_CROP_ASPECT_INDEX + 1
 SHORTCUTS = """Browse
 A / Z or Page Up / Page Down    Show the previous or next file
 Left / Right                    Browse images, or seek videos backward or forward by 5 seconds
@@ -81,7 +83,7 @@ Escape                          Leave fullscreen mode, or close
 
 Crop mode
 Drag inside the crop            Move the crop selection
-Drag a crop corner              Resize the selection while preserving its aspect ratio
+Drag a crop corner              Resize with the selected aspect constraint, or freely in Free mode
 Rotate button                   Rotate the image counterclockwise by 90 degrees
 Enter                           Prepare the crop and open the save dialogue
 Escape                          Cancel cropping
@@ -362,12 +364,14 @@ class MordantWindow(Gtk.ApplicationWindow):
     def _build_crop_controls(self):
         self.crop_controls = Gtk.Box(spacing=6)
         self.crop_controls.append(Gtk.Label(label="Aspect:"))
-        labels = [label for label, _aspect in CROP_ASPECT_PRESETS] + ["Custom..."]
+        labels = [
+            label for label, _aspect in CROP_ASPECT_PRESETS
+        ] + ["Free", "Custom..."]
         self.crop_aspect_dropdown = Gtk.DropDown.new_from_strings(labels)
-        self.crop_aspect_dropdown.set_tooltip_text("Choose the crop aspect ratio")
+        self.crop_aspect_dropdown.set_tooltip_text("Choose the crop aspect constraint")
         crop_aspect_button = self.crop_aspect_dropdown.get_first_child()
         if isinstance(crop_aspect_button, Gtk.Button):
-            crop_aspect_button.set_tooltip_text("Choose the crop aspect ratio")
+            crop_aspect_button.set_tooltip_text("Choose the crop aspect constraint")
         self.crop_aspect_dropdown.connect("notify::selected", self._crop_aspect_selected)
         self.crop_controls.append(self.crop_aspect_dropdown)
         self.crop_width_spin = Gtk.SpinButton.new_with_range(0.001, 100, 1)
@@ -462,9 +466,13 @@ class MordantWindow(Gtk.ApplicationWindow):
 
     def _crop_aspect_selected(self, *_args):
         selected = self.crop_aspect_dropdown.get_selected()
-        custom = selected >= len(CROP_ASPECT_PRESETS)
+        free = selected == FREE_CROP_ASPECT_INDEX
+        custom = selected == CUSTOM_CROP_ASPECT_INDEX
         self._show_custom_crop_aspect(custom)
-        if custom:
+        self.crop_swap_button.set_sensitive(not free)
+        if free:
+            aspect = None
+        elif custom:
             aspect = (
                 self.crop_width_spin.get_value(),
                 self.crop_height_spin.get_value(),
@@ -474,7 +482,7 @@ class MordantWindow(Gtk.ApplicationWindow):
         self._set_crop_aspect(aspect)
 
     def _custom_crop_aspect_changed(self, *_args):
-        if self.crop_aspect_dropdown.get_selected() >= len(CROP_ASPECT_PRESETS):
+        if self.crop_aspect_dropdown.get_selected() == CUSTOM_CROP_ASPECT_INDEX:
             self._set_crop_aspect(
                 (
                     self.crop_width_spin.get_value(),
@@ -488,6 +496,8 @@ class MordantWindow(Gtk.ApplicationWindow):
             self.images.set_crop_aspect(aspect)
 
     def swap_crop_aspect(self):
+        if self.crop_aspect is None:
+            return
         aspect = (self.crop_aspect[1], self.crop_aspect[0])
         for index, (_label, preset) in enumerate(CROP_ASPECT_PRESETS):
             if preset == aspect:
@@ -496,7 +506,7 @@ class MordantWindow(Gtk.ApplicationWindow):
                 return
         self.crop_width_spin.set_value(aspect[0])
         self.crop_height_spin.set_value(aspect[1])
-        self.crop_aspect_dropdown.set_selected(len(CROP_ASPECT_PRESETS))
+        self.crop_aspect_dropdown.set_selected(CUSTOM_CROP_ASPECT_INDEX)
         self._set_crop_aspect(aspect)
 
     def start_crop(self):

@@ -89,6 +89,8 @@ The `Trim video...` option in the main menu selects a video interval using edita
 
 The `Copy file` option in the main menu, or `Ctrl+C`, places the currently displayed original media file on the desktop clipboard. It can then be pasted into applications which accept file attachments. When an editable text field has focus, `Ctrl+C` retains its normal text-copy behaviour.
 
+The `Crop and rotate` option in the main menu provides common and custom aspect ratios for a crop selection. Selecting `Free` removes the aspect-ratio constraint so that each corner can set crop width and height independently. The complete image is selected when cropping begins in `Free` mode and after the image is rotated; an existing selection is preserved when switching to `Free`.
+
 ### Open common files
 
 The `Open common` option in the `Open` menu (`Ctrl+Alt+O`) opens an ordered selection of two or more directories. Only supported media filenames present directly in every selected directory are opened. Matching uses the exact filename, including letter case and suffix, and does not compare file contents or search subdirectories.

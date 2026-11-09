@@ -22,6 +22,7 @@ from .crop import (
     largest_crop,
     move_crop,
     resize_crop,
+    resize_free_crop,
     rotate_counterclockwise,
 )
 from .image_processing import (
@@ -326,16 +327,28 @@ class ImageView(Gtk.DrawingArea):
                     image_size,
                 )
             else:
-                decoded_height = self._display_frame().image.height
-                source_height_per_view_pixel = image_size[1] / decoded_height / self._scale()
-                self.crop_rectangle = resize_crop(
-                    original,
-                    mode,
-                    self._view_to_crop(start_x + dx, start_y + dy),
-                    image_size,
-                    self.crop_aspect,
-                    minimum_height=max(1.0, 24 * source_height_per_view_pixel),
-                )
+                decoded = self._display_frame().image
+                source_width_per_view_pixel = image_size[0] / decoded.width / self._scale()
+                source_height_per_view_pixel = image_size[1] / decoded.height / self._scale()
+                pointer = self._view_to_crop(start_x + dx, start_y + dy)
+                if self.crop_aspect is None:
+                    self.crop_rectangle = resize_free_crop(
+                        original,
+                        mode,
+                        pointer,
+                        image_size,
+                        minimum_width=max(1.0, 24 * source_width_per_view_pixel),
+                        minimum_height=max(1.0, 24 * source_height_per_view_pixel),
+                    )
+                else:
+                    self.crop_rectangle = resize_crop(
+                        original,
+                        mode,
+                        pointer,
+                        image_size,
+                        self.crop_aspect,
+                        minimum_height=max(1.0, 24 * source_height_per_view_pixel),
+                    )
             self.queue_draw()
             return
         if self.data is None or self._pan_origin is None:
@@ -396,11 +409,14 @@ class ImageView(Gtk.DrawingArea):
     def set_crop_aspect(self, aspect):
         if not self.cropping:
             return
+        self.crop_aspect = aspect
+        if aspect is None:
+            self.queue_draw()
+            return
         centre = (
             self.crop_rectangle.x + self.crop_rectangle.width / 2,
             self.crop_rectangle.y + self.crop_rectangle.height / 2,
         )
-        self.crop_aspect = aspect
         self.crop_rectangle = largest_crop(self._crop_image_size(), aspect, centre)
         self.queue_draw()
 

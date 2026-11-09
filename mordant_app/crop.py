@@ -35,6 +35,7 @@ class CropRectangle:
 
 
 AspectRatio = tuple[float, float]
+CropAspect = AspectRatio | None
 
 
 def aspect_value(aspect: AspectRatio) -> float:
@@ -58,12 +59,14 @@ def rational_aspect(aspect: AspectRatio) -> tuple[int, int]:
 
 def largest_crop(
     image_size: tuple[int, int],
-    aspect: AspectRatio,
+    aspect: CropAspect,
     centre: tuple[float, float] | None = None,
 ) -> CropRectangle:
     image_width, image_height = image_size
     if image_width < 1 or image_height < 1:
         raise ValueError("An image must have positive dimensions.")
+    if aspect is None:
+        return CropRectangle(0.0, 0.0, float(image_width), float(image_height))
     ratio = aspect_value(aspect)
     if image_width / image_height >= ratio:
         height = float(image_height)
@@ -120,11 +123,53 @@ def resize_crop(
     return CropRectangle(x, y, width, height)
 
 
+def resize_free_crop(
+    rectangle: CropRectangle,
+    corner: str,
+    pointer: tuple[float, float],
+    image_size: tuple[int, int],
+    minimum_width: float = 1.0,
+    minimum_height: float = 1.0,
+) -> CropRectangle:
+    """
+    Resize one crop corner without imposing an aspect ratio.
+    """
+    anchors = {
+        "north_west": (rectangle.right, rectangle.bottom, -1, -1),
+        "north_east": (rectangle.x, rectangle.bottom, 1, -1),
+        "south_west": (rectangle.right, rectangle.y, -1, 1),
+        "south_east": (rectangle.x, rectangle.y, 1, 1),
+    }
+    if corner not in anchors:
+        raise ValueError(f"Unknown crop corner: {corner}")
+    if minimum_width <= 0 or minimum_height <= 0:
+        raise ValueError("Minimum crop dimensions must be positive.")
+    anchor_x, anchor_y, direction_x, direction_y = anchors[corner]
+    available_width = image_size[0] - anchor_x if direction_x > 0 else anchor_x
+    available_height = image_size[1] - anchor_y if direction_y > 0 else anchor_y
+    raw_width = direction_x * (pointer[0] - anchor_x)
+    raw_height = direction_y * (pointer[1] - anchor_y)
+    width = min(max(minimum_width, raw_width), available_width)
+    height = min(max(minimum_height, raw_height), available_height)
+    x = anchor_x if direction_x > 0 else anchor_x - width
+    y = anchor_y if direction_y > 0 else anchor_y - height
+    return CropRectangle(x, y, width, height)
+
+
 def integer_crop_box(
     rectangle: CropRectangle,
     image_size: tuple[int, int],
-    aspect: AspectRatio,
+    aspect: CropAspect,
 ) -> tuple[int, int, int, int]:
+    image_width, image_height = image_size
+    if image_width < 1 or image_height < 1:
+        raise ValueError("An image must have positive dimensions.")
+    if aspect is None:
+        left = min(max(0, round(rectangle.x)), image_width - 1)
+        top = min(max(0, round(rectangle.y)), image_height - 1)
+        right = min(max(left + 1, round(rectangle.right)), image_width)
+        bottom = min(max(top + 1, round(rectangle.bottom)), image_height)
+        return left, top, right, bottom
     aspect_width, aspect_height = rational_aspect(aspect)
     factor = math.floor(min(rectangle.width / aspect_width, rectangle.height / aspect_height))
     if factor >= 1:
@@ -164,7 +209,7 @@ def crop_image(
     source_path: str | Path,
     output_path: str | Path,
     rectangle: CropRectangle,
-    aspect: AspectRatio,
+    aspect: CropAspect,
     rotation_quarters: int = 0,
 ) -> Path:
     source_path = Path(source_path)
